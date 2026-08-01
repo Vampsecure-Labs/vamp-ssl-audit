@@ -1589,7 +1589,67 @@ def _parse_args() -> argparse.Namespace:
                    help="Guardar informe en Markdown (apto para repositorios de auditoría)")
     p.add_argument("--csv", metavar="FILE",
                    help="Guardar resumen en CSV (genera además FILE.findings con detalle de hallazgos)")
+
+    # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
+    # --report-scope, --report-html, --report-pdf)
+    from vampsec_report import add_report_args
+    add_report_args(p)
+
     return p.parse_args()
+
+
+# =============================================================================
+# CONVERSOR A FORMATO DE INFORME UNIFICADO VSL
+# =============================================================================
+
+def _findings_vsl(results: list) -> list:
+    """
+    Convierte los hallazgos TLS/SSL al formato Finding unificado de VampSecure Labs.
+
+    Incluye todos los hallazgos de severidad MEDIUM, HIGH o CRITICAL.
+    Los hallazgos INFO se omiten para mantener el informe de cliente enfocado.
+
+    Parámetros
+    ----------
+    results : list[AuditResult]  — Lista de resultados de la auditoría SSL
+
+    Retorna
+    -------
+    List[Finding]  — Lista de hallazgos en formato VSL con prefijo SSL-NNN
+    """
+    from vampsec_report import Finding as VSLFinding
+
+    SEVERIDADES_INCLUIDAS = {"CRITICAL", "HIGH", "MEDIUM"}
+    hallazgos: list = []
+    n = 0
+
+    for r in results:
+        objetivo = f"{r.host}:{r.port}"
+        for f in r.findings:
+            if f.severity not in SEVERIDADES_INCLUIDAS:
+                continue
+            n += 1
+
+            # Evidencia: categoría + detalle técnico + nota SSL afectada
+            partes_evidencia = [
+                f"Categoría: {f.category}",
+                f"Detalle: {f.detail}",
+            ]
+            if f.grade_cap:
+                partes_evidencia.append(f"Nota SSL máxima con este hallazgo: {f.grade_cap}")
+
+            hallazgos.append(VSLFinding(
+                id          = f"SSL-{n:03d}",
+                title       = f.name,
+                severity    = f.severity,
+                description = f.detail,
+                evidence    = " | ".join(partes_evidencia),
+                affected    = objetivo,
+                remediation = f.remediation or "Consultar la guía de buenas prácticas TLS de BSI/NIST.",
+                tags        = ["ssl", "tls", f.category.lower(), f.severity.lower()],
+            ))
+
+    return hallazgos
 
 
 def _resolve_targets(args: argparse.Namespace) -> list[tuple[str, int]]:
@@ -1673,6 +1733,18 @@ def main() -> None:
         p_hosts, p_findings = reporter.to_csv(results, args.csv)
         console.print(f"[green]✔[/] CSV resumen guardado en [bold]{p_hosts}[/]")
         console.print(f"[green]✔[/] CSV hallazgos guardado en [bold]{p_findings}[/]")
+
+    # ── Informe unificado VSL (cliente) ───────────────────────────────────────
+    if getattr(args, "report_html", None) or getattr(args, "report_pdf", None):
+        from vampsec_report import VampSecReport, meta_from_args
+        meta   = meta_from_args(args, tool="vamp-ssl-audit", version=VERSION)
+        report = VampSecReport(meta=meta, findings=_findings_vsl(results))
+        if args.report_html:
+            report.to_html_client(args.report_html)
+            console.print(f"[green]✔[/] Informe cliente HTML guardado en [bold]{args.report_html}[/]")
+        if args.report_pdf:
+            report.to_pdf(args.report_pdf)
+            console.print(f"[green]✔[/] Informe cliente PDF guardado en [bold]{args.report_pdf}[/]")
 
     # Exit code según severidad máxima global
     max_sev = "INFO"
