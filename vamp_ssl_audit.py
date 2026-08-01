@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-vamp_ssl_audit.py — Auditor TLS/SSL
-=====================================
+vamp_ssl_audit.py — Auditor TLS/SSL con calificación SSLabs-style
+===================================================================
 VampSecure Labs · VampSecure Studios
-Para Uso Exclusivo en Pruebas de Penetración Autorizadas — v1.0
+Para Uso Exclusivo en Pruebas de Penetración Autorizadas — v2.0
 
 DESCRIPCIÓN GENERAL
 -------------------
-Auditor asíncrono de configuraciones TLS/SSL para hosts y puertos arbitrarios.
-Analiza protocolos soportados, suite de cifrado negociada, fortaleza del certificado
-digital y cabeceras de seguridad HTTP. Diseñado para auditorías de cumplimiento PCI-DSS,
-ISO 27001 y preparación CIS Benchmark sin depender de OpenSSL CLI externo.
+Auditor profesional de configuraciones TLS/SSL con sistema de calificación
+inspirado en SSLabs (notas A+/A/A-/B/C/D/T/F). Analiza protocolos soportados,
+suite de cifrado negociada, fortaleza del certificado digital y cabeceras de
+seguridad HTTP. Genera remediaciones concretas para cada hallazgo y puede
+exportar informes en JSON, HTML, Markdown y CSV.
 
 COMPROBACIONES REALIZADAS
 --------------------------
@@ -26,20 +27,35 @@ COMPROBACIONES REALIZADAS
     · Fecha de expiración y días restantes
     · Tamaño de clave (RSA, EC, DSA, EdDSA)
     · Algoritmo de firma (MD5, SHA-1, SHA-256+)
-    · Certificado autofirmado
-    · Cobertura de hostname (SAN / CN)
-    · Transparencia de certificados (CT log via crt.sh — opcional)
+    · Certificado autofirmado y cobertura de hostname (SAN / CN)
 
   Cabeceras HTTP de seguridad
     · Strict-Transport-Security (HSTS): presencia, max-age, includeSubDomains, preload
-    · X-Frame-Options, X-Content-Type-Options (complementario)
+    · X-Frame-Options, X-Content-Type-Options
+
+SISTEMA DE CALIFICACIÓN (SSLabs-style)
+---------------------------------------
+  A+ · Configuración excepcional: TLS 1.3 + HSTS completo + sin legacies
+  A  · Buena configuración: sin problemas significativos
+  A- · Buena configuración: HSTS incompleto o TLS 1.3 no disponible
+  B  · Aceptable: TLS 1.0/1.1, 3DES, SHA-1 o RSA < 2048 presentes
+  C  · Deficiente: SSLv3, RC4 o firma MD5 aceptados
+  D  · Muy deficiente
+  T  · Certificado no confiable: autofirmado o sin cobertura del hostname
+  F  · Fallo crítico: cifrado nulo, cert expirado o error de conexión
+
+FORMATOS DE SALIDA
+------------------
+  Consola  · Rich con color y tablas
+  JSON     · --json FILE   (estructura completa con hallazgos y remediaciones)
+  HTML     · --html FILE   (informe dark-theme standalone con insignia de nota)
+  Markdown · --markdown FILE (incluible en informes de auditoría)
+  CSV      · --csv FILE    (fila por host + fila por hallazgo en segundo fichero)
 
 DEPENDENCIAS
 ------------
-  cryptography >= 41.0.0  — Análisis profundo del certificado X.509
-  rich         >= 13.7.0  — Salida de consola con formato enriquecido
-
-  Instalación: pip install cryptography rich
+  cryptography >= 41.0.0
+  rich         >= 13.7.0
 
 AUTORÍA
 -------
@@ -51,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import csv as csv_module
 import json
 import socket
 import ssl
@@ -73,8 +90,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-
-VERSION   = "1.0"
+VERSION   = "2.0"
 TOOL_NAME = "vamp-ssl-audit"
 
 console = Console()
@@ -91,40 +107,60 @@ BANNER = r"""
 """
 
 # ---------------------------------------------------------------------------
-# Constantes de clasificación
+# Constantes de clasificación de protocolos y cifrados
 # ---------------------------------------------------------------------------
 
-# Protocolos con su nivel de riesgo
 PROTOCOL_RISK: dict[str, tuple[str, str]] = {
-    "SSLv3":   ("CRITICAL", "Protocolo obsoleto, vulnerable a POODLE"),
-    "TLS 1.0": ("CRITICAL", "Protocolo obsoleto, vulnerable a BEAST/POODLE"),
+    "SSLv3":   ("CRITICAL", "Protocolo obsoleto, vulnerable a POODLE (RFC 7568)"),
+    "TLS 1.0": ("CRITICAL", "Protocolo obsoleto, vulnerable a BEAST/POODLE (RFC 8996)"),
     "TLS 1.1": ("HIGH",     "Protocolo obsoleto, depreciado en RFC 8996"),
     "TLS 1.2": ("INFO",     "Protocolo aceptable, recomendado cifrado AEAD"),
     "TLS 1.3": ("INFO",     "Protocolo óptimo, forward-secrecy obligatoria"),
 }
 
+# Cap de nota SSLabs por protocolo legacy detectado
+PROTOCOL_GRADE_CAP: dict[str, str] = {
+    "SSLv3":   "C",
+    "TLS 1.0": "B",
+    "TLS 1.1": "B",
+}
+
 # Fragmentos de nombre de cipher que indican debilidad
 WEAK_CIPHER_PATTERNS: dict[str, tuple[str, str]] = {
-    "NULL":       ("CRITICAL", "Sin cifrado — tráfico en claro"),
-    "EXPORT":     ("CRITICAL", "Cifrado de exportación — clave reducida intencional"),
-    "ADH":        ("CRITICAL", "Diffie-Hellman anónimo — sin autenticación"),
-    "AECDH":      ("CRITICAL", "ECDH anónimo — sin autenticación"),
-    "RC4":        ("CRITICAL", "RC4 roto, sesgos estadísticos documentados"),
-    "DES ":       ("CRITICAL", "DES de 56 bits, roto en 1999"),
-    "_DES_":      ("HIGH",     "3DES vulnerable a Sweet32 (64-bit block)"),
-    "3DES":       ("HIGH",     "3DES vulnerable a Sweet32 (64-bit block)"),
-    "MD5":        ("HIGH",     "HMAC-MD5 como MAC — debilidad conocida"),
-    "RC2":        ("HIGH",     "RC2 obsoleto"),
-    "IDEA":       ("MEDIUM",   "IDEA desusado"),
-    "CAMELLIA":   ("MEDIUM",   "Camellia — aceptable pero infrecuente"),
-    "SEED":       ("MEDIUM",   "SEED — obsoleto"),
+    "NULL":    ("CRITICAL", "Sin cifrado — tráfico en claro"),
+    "EXPORT":  ("CRITICAL", "Cifrado de exportación — clave reducida intencional"),
+    "ADH":     ("CRITICAL", "Diffie-Hellman anónimo — sin autenticación del servidor"),
+    "AECDH":   ("CRITICAL", "ECDH anónimo — sin autenticación del servidor"),
+    "RC4":     ("CRITICAL", "RC4 roto, sesgos estadísticos documentados (RFC 7465)"),
+    "DES ":    ("CRITICAL", "DES de 56 bits, roto en 1999"),
+    "_DES_":   ("HIGH",     "3DES vulnerable a Sweet32 (bloque de 64 bits)"),
+    "3DES":    ("HIGH",     "3DES vulnerable a Sweet32 (bloque de 64 bits)"),
+    "MD5":     ("HIGH",     "HMAC-MD5 como MAC — debilidad conocida"),
+    "RC2":     ("HIGH",     "RC2 obsoleto y sin soporte activo"),
+    "IDEA":    ("MEDIUM",   "IDEA desusado"),
+    "CAMELLIA":("MEDIUM",   "Camellia — aceptable pero poco habitual"),
+    "SEED":    ("MEDIUM",   "SEED — estándar coreano obsoleto"),
+}
+
+# Cap de nota SSLabs por patrón de cipher débil
+CIPHER_GRADE_CAP: dict[str, str] = {
+    "NULL":    "F",
+    "EXPORT":  "F",
+    "ADH":     "F",
+    "AECDH":   "F",
+    "RC4":     "C",
+    "DES ":    "C",
+    "_DES_":   "B",
+    "3DES":    "B",
+    "MD5":     "C",
+    "RC2":     "B",
 }
 
 # Algoritmos de firma y su severidad
 SIG_ALG_RISK: dict[str, tuple[str, str]] = {
-    "md5":    ("CRITICAL", "Firma MD5 — colisiones triviales"),
-    "sha1":   ("HIGH",     "Firma SHA-1 — depreciada, colisiones conocidas"),
-    "sha256": ("INFO",     "SHA-256 — aceptable"),
+    "md5":    ("CRITICAL", "Firma MD5 — colisiones triviales demostrables"),
+    "sha1":   ("HIGH",     "Firma SHA-1 — depreciada, colisiones conocidas (SHAttered)"),
+    "sha256": ("INFO",     "SHA-256 — estándar mínimo recomendado"),
     "sha384": ("INFO",     "SHA-384 — robusto"),
     "sha512": ("INFO",     "SHA-512 — robusto"),
 }
@@ -139,16 +175,267 @@ SEVERITY_COLOR = {
 }
 
 # ---------------------------------------------------------------------------
+# Sistema de calificación SSLabs-style
+# ---------------------------------------------------------------------------
+
+# Lista de notas de mejor a peor
+GRADE_ORDER_LIST = ["A+", "A", "A-", "B", "C", "D", "T", "F"]
+
+GRADE_COLOR: dict[str, str] = {
+    "A+": "bold bright_green",
+    "A":  "bold green",
+    "A-": "bold yellow",
+    "B":  "bold yellow",
+    "C":  "bold dark_orange",
+    "D":  "bold red3",
+    "T":  "bold magenta",
+    "F":  "bold red",
+}
+
+GRADE_DESCRIPTION: dict[str, str] = {
+    "A+": "Configuración excepcional — todas las mejores prácticas cumplidas",
+    "A":  "Buena configuración — sin problemas significativos",
+    "A-": "Buena configuración — HSTS o soporte de TLS 1.3 mejorable",
+    "B":  "Configuración aceptable — protocolos legacy o cifrados débiles presentes",
+    "C":  "Configuración deficiente — SSLv3, RC4 o firma MD5 aceptada",
+    "D":  "Configuración muy deficiente",
+    "T":  "Certificado no confiable — autofirmado o sin cobertura del hostname",
+    "F":  "Fallo crítico — cifrado nulo, certificado expirado o conexión imposible",
+}
+
+# Color HTML de cada nota (clase CSS, color hex)
+HTML_GRADE_COLOR: dict[str, tuple[str, str]] = {
+    "A+": ("grade-aplus",  "#00cc55"),
+    "A":  ("grade-a",      "#22aa44"),
+    "A-": ("grade-aminus", "#aacc00"),
+    "B":  ("grade-b",      "#ffcc00"),
+    "C":  ("grade-c",      "#ff8800"),
+    "D":  ("grade-d",      "#ff5500"),
+    "T":  ("grade-t",      "#cc44cc"),
+    "F":  ("grade-f",      "#ff2222"),
+}
+
+
+def _apply_cap(current: str, cap: str) -> str:
+    """
+    Aplica un cap de nota: devuelve la nota más restrictiva entre las dos.
+    Una nota más a la derecha en GRADE_ORDER_LIST es más restrictiva.
+    """
+    ci = GRADE_ORDER_LIST.index(current) if current in GRADE_ORDER_LIST else 0
+    ca = GRADE_ORDER_LIST.index(cap)     if cap     in GRADE_ORDER_LIST else 0
+    return GRADE_ORDER_LIST[max(ci, ca)]
+
+
+def compute_grade(result: "AuditResult") -> str:
+    """
+    Calcula la calificación SSLabs-style del resultado de la auditoría.
+
+    Reglas de cap en orden de prioridad (más restrictivo gana):
+      F : Cifrado NULL/EXPORT/anónimo · cert expirado · clave RSA<512 · error de conexión
+      T : Cert autofirmado o sin cobertura del hostname (sin F previo)
+      C : SSLv3 aceptado · RC4 · DES puro · firma MD5
+      B : TLS 1.0/1.1 aceptados · 3DES · firma SHA-1 · RSA<2048 · EC<224 · DSA
+      A : HSTS ausente o TLS 1.3 no negociado por defecto
+      A-: HSTS max-age<180d · sin includeSubDomains · sin preload
+      A+: Todo correcto
+    """
+    if result.error:
+        return "F"
+
+    grade = "A+"
+
+    # Aplica todos los caps de cada hallazgo individual
+    for f in result.findings:
+        if f.grade_cap:
+            grade = _apply_cap(grade, f.grade_cap)
+
+    # Lógica adicional que no genera hallazgo individual pero sí afecta la nota
+    if grade in ("A+", "A", "A-"):
+        # TLS 1.3 requerido para A+
+        if grade == "A+" and result.negotiated_protocol != "TLSv1.3":
+            grade = _apply_cap(grade, "A")
+
+        # HSTS: analizar si es completo para decidir entre A+ / A / A-
+        if result.hsts_header:
+            has_subs    = "includesubdomains" in result.hsts_header.lower()
+            has_preload = "preload"            in result.hsts_header.lower()
+            max_age     = 0
+            for part in result.hsts_header.split(";"):
+                p = part.strip()
+                if p.lower().startswith("max-age="):
+                    try:
+                        max_age = int(p.split("=", 1)[1].strip())
+                    except ValueError:
+                        pass
+            # max-age ≥ 180 días + includeSubDomains + sin preload → A (no A+)
+            if max_age >= 15_552_000 and has_subs and not has_preload:
+                grade = _apply_cap(grade, "A")
+
+    return grade
+
+
+# ---------------------------------------------------------------------------
+# Textos de remediación por tipo de hallazgo
+# ---------------------------------------------------------------------------
+
+_REMED_TLS_LEGACY = (
+    "Eliminar el protocolo de la lista permitida:\n"
+    "  nginx:   ssl_protocols TLSv1.2 TLSv1.3;\n"
+    "  apache:  SSLProtocol -all +TLSv1.2 +TLSv1.3\n"
+    "  haproxy: bind *:443 ssl-min-ver TLSv1.2\n"
+    "Ref: RFC 8996, PCI-DSS 4.0 §4.2.1"
+)
+
+_REMED_NULL_CIPHER = (
+    "Eliminar cifrados NULL de la configuración:\n"
+    "  nginx:   ssl_ciphers ECDH+AESGCM:ECDH+CHACHA20:!NULL:!EXPORT;\n"
+    "  apache:  SSLCipherSuite HIGH:!NULL:!EXPORT:!MD5:!3DES\n"
+    "  haproxy: ssl-default-bind-ciphers ECDH+AESGCM:ECDH+CHACHA20\n"
+    "Urgencia: CRÍTICA — el tráfico circula en claro."
+)
+
+_REMED_EXPORT_CIPHER = (
+    "Eliminar cifrados EXPORT (diseñados para ser débiles intencionalmente):\n"
+    "  nginx:   ssl_ciphers '!EXPORT:HIGH:ECDH+AESGCM:ECDH+CHACHA20';\n"
+    "  apache:  SSLCipherSuite HIGH:!EXPORT:!NULL\n"
+    "Urgencia: CRÍTICA — clave de sesión reducible a ≤40 bits."
+)
+
+_REMED_ANON_CIPHER = (
+    "Eliminar cifrados anónimos (sin autenticación del servidor):\n"
+    "  nginx:   ssl_ciphers '!ADH:!AECDH:HIGH:ECDH+AESGCM';\n"
+    "  apache:  SSLCipherSuite HIGH:!ADH:!AECDH:!EXPORT\n"
+    "Urgencia: CRÍTICA — cualquiera puede hacerse pasar por el servidor."
+)
+
+_REMED_RC4 = (
+    "Eliminar RC4 (sesgos estadísticos permiten recuperar texto claro):\n"
+    "  nginx:   ssl_ciphers '!RC4:ECDH+AESGCM:ECDH+CHACHA20';\n"
+    "  apache:  SSLCipherSuite HIGH:!RC4:!EXPORT\n"
+    "Ref: RFC 7465"
+)
+
+_REMED_DES = (
+    "Eliminar DES (clave de 56 bits, roto desde 1998):\n"
+    "  nginx:   ssl_ciphers 'HIGH:!DES:!3DES:ECDH+AESGCM';\n"
+    "  apache:  SSLCipherSuite HIGH:!DES:!3DES"
+)
+
+_REMED_3DES = (
+    "Eliminar 3DES (vulnerable a Sweet32, bloque de 64 bits):\n"
+    "  nginx:   ssl_ciphers 'HIGH:!3DES:ECDH+AESGCM:ECDH+CHACHA20';\n"
+    "  apache:  SSLCipherSuite HIGH:!3DES:!DES:!RC4\n"
+    "Ref: CVE-2016-2183 (Sweet32)"
+)
+
+_REMED_CERT_EXPIRED = (
+    "Renovar el certificado de inmediato:\n"
+    "  Let's Encrypt:  certbot renew --force-renewal\n"
+    "  Comercial:      generar nueva CSR y renovar en la CA\n"
+    "Urgencia: CRÍTICA — los navegadores rechazan la conexión."
+)
+
+_REMED_CERT_EXPIRING = (
+    "Renovar el certificado antes de su vencimiento:\n"
+    "  Let's Encrypt:  certbot renew  (se puede ejecutar ya)\n"
+    "  Comercial:      iniciar proceso de renovación en la CA\n"
+    "Recomendado: renovar con ≥30 días de antelación."
+)
+
+_REMED_SELF_SIGNED = (
+    "Obtener un certificado firmado por una CA de confianza:\n"
+    "  Gratuito:  certbot --nginx -d ejemplo.com  (Let's Encrypt)\n"
+    "  Interno:   configurar la CA raíz corporativa en los clientes\n"
+    "Urgencia: ALTA — los navegadores muestran advertencia de seguridad."
+)
+
+_REMED_RSA_SMALL = (
+    "Generar una clave RSA de mínimo 2048 bits (recomendado 4096):\n"
+    "  openssl genrsa -out clave.key 4096\n"
+    "  openssl req -new -key clave.key -out solicitud.csr\n"
+    "Ref: NIST SP 800-131Ar2"
+)
+
+_REMED_RSA_WEAK = (
+    "Generar una clave RSA de al menos 2048 bits (recomendado 4096):\n"
+    "  openssl genrsa -out clave.key 4096\n"
+    "  openssl req -new -key clave.key -out solicitud.csr\n"
+    "Ref: NIST SP 800-131Ar2"
+)
+
+_REMED_SHA1 = (
+    "Renovar el certificado con algoritmo de firma SHA-256 o superior:\n"
+    "  openssl req -new -sha256 -key clave.key -out solicitud.csr\n"
+    "Los navegadores modernos muestran advertencia con SHA-1 desde 2017."
+)
+
+_REMED_MD5 = (
+    "Renovar el certificado con algoritmo de firma SHA-256 o superior:\n"
+    "  openssl req -new -sha256 -key clave.key -out solicitud.csr\n"
+    "Urgencia: CRÍTICA — colisiones MD5 son triviales (Flame, 2012)."
+)
+
+_REMED_HSTS_ABSENT = (
+    "Añadir cabecera HSTS a la respuesta del servidor:\n"
+    "  nginx:   add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains; preload';\n"
+    "  apache:  Header always set Strict-Transport-Security 'max-age=31536000; includeSubDomains; preload'\n"
+    "  haproxy: http-response set-header Strict-Transport-Security max-age=31536000;includeSubDomains;preload\n"
+    "Ref: RFC 6797 · Registrar en https://hstspreload.org para preload"
+)
+
+_REMED_HSTS_SHORT = (
+    "Aumentar max-age a mínimo 180 días (15 552 000 s), recomendado 1 año:\n"
+    "  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload\n"
+    "El valor actual es insuficiente para el preload de navegadores."
+)
+
+_REMED_HSTS_NO_SUBS = (
+    "Añadir includeSubDomains a la cabecera HSTS:\n"
+    "  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload\n"
+    "Sin includeSubDomains los subdominios quedan desprotegidos."
+)
+
+_REMED_XFO = (
+    "Añadir cabecera X-Frame-Options para prevenir clickjacking:\n"
+    "  nginx:   add_header X-Frame-Options DENY;\n"
+    "  apache:  Header always set X-Frame-Options DENY\n"
+    "Usar SAMEORIGIN si la app legítimamente embebe su propio contenido."
+)
+
+_REMED_XCTO = (
+    "Añadir cabecera X-Content-Type-Options para prevenir MIME sniffing:\n"
+    "  nginx:   add_header X-Content-Type-Options nosniff;\n"
+    "  apache:  Header always set X-Content-Type-Options nosniff"
+)
+
+_REMED_HOSTNAME = (
+    "El certificado instalado no cubre este hostname.\n"
+    "Soluciones:\n"
+    "  a) Obtener un certificado que incluya este hostname en su SAN\n"
+    "  b) Añadir el hostname como SAN adicional al renovar\n"
+    "Ref: RFC 2818 §3.1 — el CN es ignorado si existen SAN"
+)
+
+_REMED_DSA = (
+    "Migrar a clave RSA (≥2048 bits) o EC (P-256/P-384):\n"
+    "  openssl ecparam -name prime256v1 -genkey -noout -out clave-ec.key\n"
+    "  openssl req -new -sha256 -key clave-ec.key -out solicitud.csr\n"
+    "DSA está depreciado en la mayoría de CAs desde 2015."
+)
+
+# ---------------------------------------------------------------------------
 # Estructuras de datos
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Finding:
-    """Hallazgo de seguridad individual."""
-    severity:  str
-    category:  str
-    name:      str
-    detail:    str
+    """Hallazgo de seguridad individual con remediación y cap de nota."""
+    severity:    str
+    category:    str
+    name:        str
+    detail:      str
+    remediation: str = ""   # Texto de remediación con pasos concretos
+    grade_cap:   str = ""   # Cap de nota SSLabs que aplica este hallazgo
 
     @property
     def order(self) -> int:
@@ -158,42 +445,44 @@ class Finding:
 @dataclass
 class CertInfo:
     """Detalles extraídos del certificado X.509."""
-    subject:         str = ""
-    issuer:          str = ""
-    not_before:      Optional[datetime] = None
-    not_after:       Optional[datetime] = None
-    days_remaining:  int = 0
-    serial:          str = ""
-    key_type:        str = ""
-    key_bits:        int = 0
-    sig_algorithm:   str = ""
-    san_entries:     list[str] = field(default_factory=list)
-    is_self_signed:  bool = False
-    hostname_ok:     bool = True
-    cn:              str = ""
+    subject:        str = ""
+    issuer:         str = ""
+    not_before:     Optional[datetime] = None
+    not_after:      Optional[datetime] = None
+    days_remaining: int = 0
+    serial:         str = ""
+    key_type:       str = ""
+    key_bits:       int = 0
+    sig_algorithm:  str = ""
+    san_entries:    list[str] = field(default_factory=list)
+    is_self_signed: bool = False
+    hostname_ok:    bool = True
+    cn:             str = ""
 
 
 @dataclass
 class AuditResult:
     """Resultado completo de la auditoría de un host:port."""
-    host:                 str
-    port:                 int
-    timestamp:            str
+    host:                  str
+    port:                  int
+    timestamp:             str
     # Protocolo
-    negotiated_protocol:  str = ""
-    negotiated_cipher:    str = ""
-    supported_protocols:  list[str] = field(default_factory=list)
+    negotiated_protocol:   str = ""
+    negotiated_cipher:     str = ""
+    supported_protocols:   list[str] = field(default_factory=list)
     unsupported_protocols: list[str] = field(default_factory=list)
     # Certificado
-    cert:                 Optional[CertInfo] = None
-    # HSTS
-    hsts_header:          Optional[str] = None
-    x_frame_options:      Optional[str] = None
-    x_content_type:       Optional[str] = None
+    cert:                  Optional[CertInfo] = None
+    # Cabeceras HTTP
+    hsts_header:           Optional[str] = None
+    x_frame_options:       Optional[str] = None
+    x_content_type:        Optional[str] = None
     # Hallazgos consolidados
-    findings:             list[Finding] = field(default_factory=list)
+    findings:              list[Finding] = field(default_factory=list)
+    # Calificación SSLabs-style (calculada al finalizar la auditoría)
+    grade:                 str = ""
     # Error fatal (host no alcanzable, etc.)
-    error:                Optional[str] = None
+    error:                 Optional[str] = None
 
     @property
     def max_severity(self) -> str:
@@ -214,17 +503,18 @@ class SSLAuditor:
     """
     Motor principal de auditoría TLS/SSL.
 
-    Realiza cuatro bloques de comprobaciones por host:
+    Fases de comprobación:
       1. Protocolo negociado y cifrado por defecto
       2. Soporte de versiones antiguas (SSLv3, TLS 1.0, TLS 1.1)
       3. Análisis profundo del certificado X.509
       4. Cabeceras HTTP de seguridad (HSTS y otras)
+      5. Cálculo de nota SSLabs-style
     """
 
     def __init__(self, timeout: int = 10) -> None:
         self._timeout = timeout
 
-    # ------------------------------------------------------------------ API
+    # ------------------------------------------------------------------ API pública
 
     def audit(self, host: str, port: int) -> AuditResult:
         """Punto de entrada para auditar un host:port."""
@@ -241,6 +531,7 @@ class SSLAuditor:
             result.error = str(exc)
         finally:
             result.findings.sort(key=lambda f: f.order)
+            result.grade = compute_grade(result)
         return result
 
     # --------------------------------------------------------- Fase 1: handshake por defecto
@@ -249,15 +540,12 @@ class SSLAuditor:
         """Realiza el handshake TLS estándar y extrae protocolo, cipher y certificado."""
         ctx = ssl.create_default_context()
         ctx.check_hostname = True
-        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.verify_mode    = ssl.CERT_REQUIRED
 
-        # Intentar primero con verificación completa; si falla por cert inválido,
-        # reintentar sin verificación para obtener igualmente los datos del cert.
-        der_cert: Optional[bytes] = None
+        der_cert:    Optional[bytes] = None
         proto_version: str = ""
-        cipher_name: str = ""
-        # Tracking de si el hostname fue verificado correctamente
-        hostname_ok = True
+        cipher_name:   str = ""
+        hostname_ok:   bool = True
 
         try:
             with socket.create_connection((result.host, result.port), timeout=self._timeout) as sock:
@@ -275,6 +563,7 @@ class SSLAuditor:
                 category="Certificado",
                 name="Error de validación TLS",
                 detail=str(exc),
+                grade_cap="T",
             ))
             ctx_nocheck = ssl.create_default_context()
             ctx_nocheck.check_hostname = False
@@ -291,18 +580,21 @@ class SSLAuditor:
         result.negotiated_protocol = proto_version
         result.negotiated_cipher   = cipher_name
 
-        # Hallazgos de protocolo negociado
+        # Hallazgos del protocolo negociado por defecto
         if proto_version in PROTOCOL_RISK:
             sev, detail = PROTOCOL_RISK[proto_version]
             if sev not in ("INFO",):
+                cap = PROTOCOL_GRADE_CAP.get(proto_version, "B")
                 result.findings.append(Finding(
                     severity=sev,
                     category="Protocolo",
                     name=f"Protocolo negociado: {proto_version}",
                     detail=detail,
+                    remediation=_REMED_TLS_LEGACY,
+                    grade_cap=cap,
                 ))
 
-        # Hallazgos de cipher negociado
+        # Hallazgos del cipher negociado
         self._classify_cipher(cipher_name, result)
 
         # Análisis del certificado
@@ -315,11 +607,10 @@ class SSLAuditor:
     def _phase_legacy_protocols(self, result: AuditResult) -> None:
         """
         Intenta conexiones forzadas con versiones antiguas de TLS.
-        Si el servidor acepta SSLv3/TLS1.0/TLS1.1 es un hallazgo.
+        Si el servidor acepta SSLv3/TLS1.0/TLS1.1, genera un hallazgo.
         """
         legacy_map: list[tuple[str, ssl.TLSVersion, ssl.TLSVersion]] = []
 
-        # SSLv3 — puede no estar disponible en OpenSSL moderno
         try:
             legacy_map.append(("SSLv3", ssl.TLSVersion.SSLv3, ssl.TLSVersion.SSLv3))
         except AttributeError:
@@ -336,11 +627,14 @@ class SSLAuditor:
             if accepted:
                 result.supported_protocols.append(label)
                 sev, detail = PROTOCOL_RISK.get(label, ("HIGH", "Protocolo obsoleto"))
+                cap = PROTOCOL_GRADE_CAP.get(label, "B")
                 result.findings.append(Finding(
                     severity=sev,
                     category="Protocolo",
                     name=f"Soporta {label}",
                     detail=detail,
+                    remediation=_REMED_TLS_LEGACY,
+                    grade_cap=cap,
                 ))
             else:
                 result.unsupported_protocols.append(label)
@@ -391,6 +685,7 @@ class SSLAuditor:
                 category="Certificado",
                 name="No se puede parsear el certificado",
                 detail=str(exc),
+                grade_cap="F",
             ))
             return info
 
@@ -398,9 +693,9 @@ class SSLAuditor:
         def _rdns(name: x509.Name) -> str:
             parts = []
             for oid, attr in [
-                (NameOID.COMMON_NAME, "CN"),
-                (NameOID.ORGANIZATION_NAME, "O"),
-                (NameOID.COUNTRY_NAME, "C"),
+                (NameOID.COMMON_NAME,        "CN"),
+                (NameOID.ORGANIZATION_NAME,  "O"),
+                (NameOID.COUNTRY_NAME,       "C"),
             ]:
                 try:
                     val = name.get_attributes_for_oid(oid)
@@ -413,7 +708,6 @@ class SSLAuditor:
         info.subject = _rdns(cert.subject)
         info.issuer  = _rdns(cert.issuer)
 
-        # CN
         try:
             cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
             info.cn = cn_attrs[0].value if cn_attrs else ""
@@ -424,8 +718,7 @@ class SSLAuditor:
         info.not_before = cert.not_valid_before_utc
         info.not_after  = cert.not_valid_after_utc
         now             = datetime.now(timezone.utc)
-        delta           = info.not_after - now
-        info.days_remaining = delta.days
+        info.days_remaining = (info.not_after - now).days
 
         if info.days_remaining < 0:
             result.findings.append(Finding(
@@ -433,6 +726,8 @@ class SSLAuditor:
                 category="Certificado",
                 name="Certificado expirado",
                 detail=f"Venció hace {-info.days_remaining} días ({info.not_after.date()})",
+                remediation=_REMED_CERT_EXPIRED,
+                grade_cap="F",
             ))
         elif info.days_remaining < 7:
             result.findings.append(Finding(
@@ -440,13 +735,17 @@ class SSLAuditor:
                 category="Certificado",
                 name="Certificado expira en < 7 días",
                 detail=f"Expira en {info.days_remaining} días ({info.not_after.date()})",
+                remediation=_REMED_CERT_EXPIRED,
+                grade_cap="F",
             ))
         elif info.days_remaining < 30:
             result.findings.append(Finding(
                 severity="HIGH",
                 category="Certificado",
-                name="Certificado expira pronto",
+                name="Certificado expira en < 30 días",
                 detail=f"Expira en {info.days_remaining} días ({info.not_after.date()})",
+                remediation=_REMED_CERT_EXPIRING,
+                grade_cap="B",
             ))
         elif info.days_remaining < 90:
             result.findings.append(Finding(
@@ -454,12 +753,13 @@ class SSLAuditor:
                 category="Certificado",
                 name="Certificado caduca en < 90 días",
                 detail=f"Expira en {info.days_remaining} días ({info.not_after.date()})",
+                remediation=_REMED_CERT_EXPIRING,
             ))
 
         # Serial
         info.serial = f"{cert.serial_number:X}"
 
-        # Tipo y tamaño de clave
+        # Tipo y tamaño de clave pública
         pub = cert.public_key()
         if isinstance(pub, rsa.RSAPublicKey):
             info.key_type = "RSA"
@@ -467,24 +767,40 @@ class SSLAuditor:
             if pub.key_size < 1024:
                 result.findings.append(Finding(
                     severity="CRITICAL", category="Certificado",
-                    name="Clave RSA < 1024 bits", detail=f"Clave de {pub.key_size} bits — rota"),)
+                    name="Clave RSA < 1024 bits",
+                    detail=f"Clave de {pub.key_size} bits — rota criptográficamente",
+                    remediation=_REMED_RSA_SMALL,
+                    grade_cap="F",
+                ))
             elif pub.key_size < 2048:
                 result.findings.append(Finding(
                     severity="HIGH", category="Certificado",
-                    name="Clave RSA < 2048 bits", detail=f"Clave de {pub.key_size} bits — débil"),)
+                    name="Clave RSA < 2048 bits",
+                    detail=f"Clave de {pub.key_size} bits — por debajo del mínimo recomendado",
+                    remediation=_REMED_RSA_WEAK,
+                    grade_cap="B",
+                ))
         elif isinstance(pub, ec.EllipticCurvePublicKey):
             info.key_type = "EC"
             info.key_bits = pub.key_size
             if pub.key_size < 224:
                 result.findings.append(Finding(
                     severity="HIGH", category="Certificado",
-                    name="Clave EC < 224 bits", detail=f"Curva de {pub.key_size} bits — débil"),)
+                    name="Clave EC < 224 bits",
+                    detail=f"Curva de {pub.key_size} bits — por debajo del mínimo seguro",
+                    remediation=_REMED_RSA_SMALL,
+                    grade_cap="B",
+                ))
         elif isinstance(pub, dsa.DSAPublicKey):
             info.key_type = "DSA"
             info.key_bits = pub.key_size
             result.findings.append(Finding(
                 severity="HIGH", category="Certificado",
-                name="Clave DSA", detail="DSA depreciado; usar EC o RSA"),)
+                name="Clave DSA",
+                detail="DSA depreciado; migrar a RSA ≥ 2048 bits o EC P-256/P-384",
+                remediation=_REMED_DSA,
+                grade_cap="B",
+            ))
         elif isinstance(pub, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
             info.key_type = type(pub).__name__.replace("PublicKey", "")
             info.key_bits = 255 if "25519" in info.key_type else 448
@@ -497,17 +813,25 @@ class SSLAuditor:
                 if isinstance(sig_alg, MD5):
                     result.findings.append(Finding(
                         severity="CRITICAL", category="Certificado",
-                        name="Firma MD5", detail=SIG_ALG_RISK["md5"][1]),)
+                        name="Firma MD5",
+                        detail=SIG_ALG_RISK["md5"][1],
+                        remediation=_REMED_MD5,
+                        grade_cap="C",
+                    ))
                 elif isinstance(sig_alg, SHA1):
                     result.findings.append(Finding(
                         severity="HIGH", category="Certificado",
-                        name="Firma SHA-1", detail=SIG_ALG_RISK["sha1"][1]),)
+                        name="Firma SHA-1",
+                        detail=SIG_ALG_RISK["sha1"][1],
+                        remediation=_REMED_SHA1,
+                        grade_cap="B",
+                    ))
             else:
                 info.sig_algorithm = "Ed25519/Ed448"
         except Exception:
             info.sig_algorithm = "desconocido"
 
-        # SAN
+        # Subject Alternative Names
         try:
             san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
             for entry in san_ext.value:
@@ -516,24 +840,28 @@ class SSLAuditor:
         except x509.extensions.ExtensionNotFound:
             pass
 
-        # Autofirmado
+        # Certificado autofirmado
         info.is_self_signed = (cert.subject == cert.issuer)
         if info.is_self_signed:
             result.findings.append(Finding(
                 severity="HIGH",
                 category="Certificado",
                 name="Certificado autofirmado",
-                detail="No emitido por una CA reconocida",
+                detail="No emitido por una CA reconocida — los navegadores muestran advertencia",
+                remediation=_REMED_SELF_SIGNED,
+                grade_cap="T",
             ))
 
-        # Verificación de hostname — determinada por el resultado del handshake inicial
+        # Cobertura del hostname (determinada por el resultado del handshake inicial)
         info.hostname_ok = hostname_ok
-        if not hostname_ok:
+        if not hostname_ok and not info.is_self_signed:
             result.findings.append(Finding(
                 severity="CRITICAL",
                 category="Certificado",
                 name="El certificado no cubre el hostname",
                 detail=f"Hostname {hostname!r} no coincide con SAN/CN del certificado",
+                remediation=_REMED_HOSTNAME,
+                grade_cap="T",
             ))
 
         return info
@@ -542,8 +870,8 @@ class SSLAuditor:
 
     def _phase_http_headers(self, result: AuditResult) -> None:
         """
-        Realiza una petición HTTP/HTTPS y analiza las cabeceras de seguridad.
-        No falla si el puerto no es HTTP estándar.
+        Realiza una petición HTTPS y analiza las cabeceras de seguridad.
+        No falla si el puerto no responde a HTTP.
         """
         url = f"https://{result.host}:{result.port}/"
         req = urllib.request.Request(url, method="HEAD")
@@ -551,43 +879,47 @@ class SSLAuditor:
 
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx.verify_mode    = ssl.CERT_NONE
 
         try:
             with urllib.request.urlopen(req, timeout=self._timeout, context=ctx) as resp:
-                headers = resp.headers
+                headers             = resp.headers
                 result.hsts_header     = headers.get("Strict-Transport-Security")
                 result.x_frame_options = headers.get("X-Frame-Options")
                 result.x_content_type  = headers.get("X-Content-Type-Options")
         except (urllib.error.URLError, OSError):
-            # Puerto no HTTP o error de red — no es un hallazgo de SSL
-            return
+            return  # Puerto no HTTP o error de red — no es un hallazgo TLS
         except Exception:
             return
 
-        # Hallazgos HSTS
+        # HSTS
         if not result.hsts_header:
             result.findings.append(Finding(
                 severity="HIGH",
                 category="Cabeceras HTTP",
                 name="HSTS ausente",
-                detail="Falta Strict-Transport-Security — posibles ataques de downgrade HTTP",
+                detail="Falta Strict-Transport-Security — posibles ataques de downgrade HTTP→HTTPS",
+                remediation=_REMED_HSTS_ABSENT,
+                grade_cap="A",
             ))
         else:
             max_age = 0
             for part in result.hsts_header.split(";"):
-                part = part.strip()
-                if part.lower().startswith("max-age="):
+                p = part.strip()
+                if p.lower().startswith("max-age="):
                     try:
-                        max_age = int(part.split("=", 1)[1])
+                        max_age = int(p.split("=", 1)[1].strip())
                     except ValueError:
                         pass
+
             if max_age < 10_886_400:  # < 126 días
                 result.findings.append(Finding(
                     severity="MEDIUM",
                     category="Cabeceras HTTP",
                     name="HSTS max-age insuficiente",
-                    detail=f"max-age={max_age}s es inferior al mínimo recomendado (126 días = 10 886 400s)",
+                    detail=f"max-age={max_age}s es inferior al mínimo recomendado (180 días = 15 552 000s)",
+                    remediation=_REMED_HSTS_SHORT,
+                    grade_cap="A-",
                 ))
             if "includesubdomains" not in result.hsts_header.lower():
                 result.findings.append(Finding(
@@ -595,22 +927,28 @@ class SSLAuditor:
                     category="Cabeceras HTTP",
                     name="HSTS sin includeSubDomains",
                     detail="Los subdominios no están cubiertos por la política HSTS",
+                    remediation=_REMED_HSTS_NO_SUBS,
+                    grade_cap="A-",
                 ))
 
+        # X-Frame-Options
         if result.x_frame_options is None:
             result.findings.append(Finding(
                 severity="LOW",
                 category="Cabeceras HTTP",
                 name="X-Frame-Options ausente",
-                detail="Puede facilitar ataques de clickjacking si la app es embebible",
+                detail="Puede facilitar ataques de clickjacking si la app es embebible en iframe",
+                remediation=_REMED_XFO,
             ))
 
+        # X-Content-Type-Options
         if result.x_content_type is None:
             result.findings.append(Finding(
                 severity="LOW",
                 category="Cabeceras HTTP",
                 name="X-Content-Type-Options ausente",
                 detail="Sin nosniff — posible MIME-type sniffing por el navegador",
+                remediation=_REMED_XCTO,
             ))
 
     # --------------------------------------------------------- Utilidades internas
@@ -619,13 +957,29 @@ class SSLAuditor:
         """Busca patrones de debilidad en el nombre del cipher negociado."""
         if not cipher_name:
             return
+
+        remed_map = {
+            "NULL": _REMED_NULL_CIPHER,
+            "EXPORT": _REMED_EXPORT_CIPHER,
+            "ADH": _REMED_ANON_CIPHER,
+            "AECDH": _REMED_ANON_CIPHER,
+            "RC4": _REMED_RC4,
+            "DES ": _REMED_DES,
+            "_DES_": _REMED_3DES,
+            "3DES": _REMED_3DES,
+        }
+
         for pattern, (sev, detail) in WEAK_CIPHER_PATTERNS.items():
             if pattern in cipher_name:
+                cap   = CIPHER_GRADE_CAP.get(pattern, "")
+                remed = remed_map.get(pattern, "")
                 result.findings.append(Finding(
                     severity=sev,
                     category="Cifrado",
                     name=f"Cipher débil: {cipher_name}",
                     detail=detail,
+                    remediation=remed,
+                    grade_cap=cap,
                 ))
                 return  # Un solo hallazgo por cipher
 
@@ -643,28 +997,35 @@ class Reporter:
     # ---------------------------------------------------------------- Consola Rich
 
     def print_result(self, result: AuditResult) -> None:
-        """Muestra el resultado de una auditoría en la consola."""
+        """Muestra el resultado de un host en la consola con su nota prominente."""
         if result.error:
             self._c.print(
                 f"[bold red]✗[/] [bold]{result.target}[/] — {result.error}"
             )
             return
 
-        # Cabecera del host
-        sev   = result.max_severity
-        color = SEVERITY_COLOR.get(sev, "white")
+        sev        = result.max_severity
+        sev_color  = SEVERITY_COLOR.get(sev, "white")
+        grade      = result.grade
+        grade_col  = GRADE_COLOR.get(grade, "white")
+        grade_desc = GRADE_DESCRIPTION.get(grade, "")
+
         self._c.print(f"\n[bold cyan]{'─'*60}[/]")
-        self._c.print(f"  [{color}]{sev}[/]  [bold]{result.target}[/]")
+        # Nota prominente al estilo SSLabs
+        self._c.print(
+            f"  Nota: [{grade_col}]{grade:>2}[/{grade_col}]  "
+            f"[bold]{result.target}[/]  "
+            f"[{sev_color}]{sev}[/{sev_color}]"
+        )
+        self._c.print(f"  [dim]{grade_desc}[/]")
         self._c.print(f"[bold cyan]{'─'*60}[/]")
 
-        # Protocolo y cipher
         self._c.print(f"  [bold]Protocolo negociado:[/] {result.negotiated_protocol or 'N/A'}")
         self._c.print(f"  [bold]Cipher negociado:[/]    {result.negotiated_cipher or 'N/A'}")
 
-        # Protocolos legacy detectados
         if result.supported_protocols:
             self._c.print(
-                f"  [bold red]Protocolos inseguros aceptados:[/] "
+                "  [bold red]Protocolos inseguros aceptados:[/] "
                 + ", ".join(result.supported_protocols)
             )
 
@@ -677,11 +1038,18 @@ class Reporter:
             self._c.print(f"    Emisor:        {c.issuer}")
             self._c.print(f"    Clave:         {c.key_type} {c.key_bits} bits")
             self._c.print(f"    Firma:         {c.sig_algorithm}")
-            self._c.print(f"    Expira:        [{exp_color}]{c.not_after.date() if c.not_after else 'N/A'} ({c.days_remaining}d)[/{exp_color}]")
+            self._c.print(
+                f"    Expira:        [{exp_color}]"
+                f"{c.not_after.date() if c.not_after else 'N/A'} ({c.days_remaining}d)"
+                f"[/{exp_color}]"
+            )
             self._c.print(f"    Autofirmado:   {'[red]SÍ[/red]' if c.is_self_signed else '[green]No[/green]'}")
             if c.san_entries:
-                self._c.print(f"    SAN ({len(c.san_entries)}):     {', '.join(c.san_entries[:5])}"
-                              + (" …" if len(c.san_entries) > 5 else ""))
+                self._c.print(
+                    f"    SAN ({len(c.san_entries)}):     "
+                    + ", ".join(c.san_entries[:5])
+                    + (" …" if len(c.san_entries) > 5 else "")
+                )
 
         # HSTS
         if result.hsts_header:
@@ -689,24 +1057,37 @@ class Reporter:
         else:
             self._c.print(f"\n  [bold]HSTS:[/] [red]AUSENTE[/]")
 
-        # Tabla de hallazgos
+        # Tabla de hallazgos con remediación
         if result.findings:
             self._c.print()
-            tbl = Table(show_header=True, header_style="bold cyan",
-                        box=None, padding=(0, 1))
-            tbl.add_column("SEV",      width=10)
+            tbl = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
+            tbl.add_column("SEV",       width=10)
             tbl.add_column("Categoría", width=18)
             tbl.add_column("Hallazgo",  min_width=32)
             tbl.add_column("Detalle",   min_width=38)
             for f in result.findings:
                 color = SEVERITY_COLOR.get(f.severity, "white")
                 tbl.add_row(
-                    f"[{color}]{f.severity}[/{color}]",
-                    f.category,
-                    f.name,
-                    f.detail,
+                    Text(f.severity, style=color),
+                    Text(f.category),
+                    Text(f.name),
+                    Text(f.detail),
                 )
             self._c.print(tbl)
+
+            # Mostrar remediaciones sólo para hallazgos CRITICAL y HIGH
+            criticos = [f for f in result.findings if f.severity in ("CRITICAL", "HIGH") and f.remediation]
+            if criticos:
+                self._c.print(f"\n  [bold cyan]Pasos de remediación prioritarios:[/]")
+                for f in criticos:
+                    self._c.print(
+                        Panel(
+                            f.remediation,
+                            title=f"[{SEVERITY_COLOR[f.severity]}]{f.severity}[/] — {f.name}",
+                            border_style="cyan",
+                            expand=False,
+                        )
+                    )
         else:
             self._c.print("\n  [bold green]✔ Sin hallazgos de seguridad[/]")
 
@@ -715,31 +1096,39 @@ class Reporter:
         self._c.print("\n")
         tbl = Table(title="Resumen de auditoría TLS/SSL",
                     header_style="bold cyan", show_lines=True)
-        tbl.add_column("Host:puerto",      min_width=24)
-        tbl.add_column("Protocolo",        width=10)
-        tbl.add_column("Cipher",           min_width=28)
-        tbl.add_column("Cert expira",      width=14)
-        tbl.add_column("HSTS",             width=6)
-        tbl.add_column("Hallazgos",        width=10)
-        tbl.add_column("Severidad máx.",   width=12)
+        tbl.add_column("Host:puerto",    min_width=24)
+        tbl.add_column("Nota",           width=6)
+        tbl.add_column("Protocolo",      width=10)
+        tbl.add_column("Cert expira",    width=14)
+        tbl.add_column("HSTS",           width=6)
+        tbl.add_column("Hallazgos C/H",  width=12)
+        tbl.add_column("Severidad máx.", width=12)
 
         for r in results:
             if r.error:
-                tbl.add_row(r.target, "[red]ERROR[/]", r.error, "-", "-", "-", "[red]ERROR[/]")
+                tbl.add_row(
+                    r.target, "[red]F[/]", "[red]ERROR[/]",
+                    "-", "-", "-", "[red]ERROR[/]",
+                )
                 continue
-            sev_col = SEVERITY_COLOR.get(r.max_severity, "white")
-            days    = r.cert.days_remaining if r.cert else "?"
-            days_s  = f"[red]{days}d[/]" if isinstance(days, int) and days < 30 else (
-                      f"[yellow]{days}d[/]" if isinstance(days, int) and days < 90 else f"[green]{days}d[/]")
-            hsts_s  = "[green]✔[/]" if r.hsts_header else "[red]✗[/]"
-            counts  = sum(1 for f in r.findings if f.severity in ("CRITICAL", "HIGH"))
+            sev_col   = SEVERITY_COLOR.get(r.max_severity, "white")
+            grade_col = GRADE_COLOR.get(r.grade, "white")
+            days      = r.cert.days_remaining if r.cert else "?"
+            if isinstance(days, int):
+                days_s = (f"[red]{days}d[/]"    if days < 30
+                          else f"[yellow]{days}d[/]" if days < 90
+                          else f"[green]{days}d[/]")
+            else:
+                days_s = "?"
+            hsts_s   = "[green]✔[/]" if r.hsts_header else "[red]✗[/]"
+            crit_hi  = sum(1 for f in r.findings if f.severity in ("CRITICAL", "HIGH"))
             tbl.add_row(
                 f"[bold]{r.target}[/]",
+                f"[{grade_col}]{r.grade}[/{grade_col}]",
                 r.negotiated_protocol,
-                r.negotiated_cipher,
                 days_s,
                 hsts_s,
-                str(len(r.findings)),
+                str(crit_hi),
                 f"[{sev_col}]{r.max_severity}[/{sev_col}]",
             )
         self._c.print(tbl)
@@ -747,7 +1136,7 @@ class Reporter:
     # ---------------------------------------------------------------- JSON
 
     def to_json(self, results: list[AuditResult]) -> str:
-        """Serializa los resultados en JSON."""
+        """Serializa los resultados en JSON incluyendo nota y remediaciones."""
         def _cert_dict(c: Optional[CertInfo]) -> Optional[dict]:
             if c is None:
                 return None
@@ -755,7 +1144,7 @@ class Reporter:
                 "subject":        c.subject,
                 "issuer":         c.issuer,
                 "not_before":     c.not_before.isoformat() if c.not_before else None,
-                "not_after":      c.not_after.isoformat() if c.not_after else None,
+                "not_after":      c.not_after.isoformat()  if c.not_after  else None,
                 "days_remaining": c.days_remaining,
                 "key_type":       c.key_type,
                 "key_bits":       c.key_bits,
@@ -771,6 +1160,8 @@ class Reporter:
                 "port":                  r.port,
                 "timestamp":             r.timestamp,
                 "error":                 r.error,
+                "grade":                 r.grade,
+                "grade_description":     GRADE_DESCRIPTION.get(r.grade, ""),
                 "negotiated_protocol":   r.negotiated_protocol,
                 "negotiated_cipher":     r.negotiated_cipher,
                 "supported_protocols":   r.supported_protocols,
@@ -781,23 +1172,32 @@ class Reporter:
                 "x_content_type":        r.x_content_type,
                 "max_severity":          r.max_severity,
                 "findings": [
-                    {"severity": f.severity, "category": f.category,
-                     "name": f.name, "detail": f.detail}
+                    {
+                        "severity":    f.severity,
+                        "category":    f.category,
+                        "name":        f.name,
+                        "detail":      f.detail,
+                        "grade_cap":   f.grade_cap,
+                        "remediation": f.remediation,
+                    }
                     for f in r.findings
                 ],
             }
 
         return json.dumps(
-            {"tool": TOOL_NAME, "version": VERSION,
-             "generated": datetime.now(timezone.utc).isoformat(),
-             "results": [_result_dict(r) for r in results]},
+            {
+                "tool":      TOOL_NAME,
+                "version":   VERSION,
+                "generated": datetime.now(timezone.utc).isoformat(),
+                "results":   [_result_dict(r) for r in results],
+            },
             indent=2, ensure_ascii=False,
         )
 
     # ---------------------------------------------------------------- HTML
 
     def to_html(self, results: list[AuditResult]) -> str:
-        """Genera un informe HTML standalone dark-theme."""
+        """Genera un informe HTML standalone dark-theme con insignia de nota SSLabs-style."""
         SEV_CSS = {
             "CRITICAL": "sev-crit",
             "HIGH":     "sev-high",
@@ -809,15 +1209,21 @@ class Reporter:
         rows_html: list[str] = []
         for r in results:
             if r.error:
-                rows_html.append(f'<div class="result-block"><h2>{escape(r.target)}</h2>'
-                                 f'<p class="sev-crit">ERROR: {escape(r.error)}</p></div>')
+                rows_html.append(
+                    f'<div class="result-block"><h2>{escape(r.target)}</h2>'
+                    f'<p class="sev-crit">ERROR: {escape(r.error)}</p></div>'
+                )
                 continue
+
+            grade         = r.grade
+            _, grade_hex  = HTML_GRADE_COLOR.get(grade, ("grade-f", "#ff2222"))
+            grade_desc_h  = escape(GRADE_DESCRIPTION.get(grade, ""))
 
             cert_html = ""
             if r.cert:
                 c = r.cert
-                exp_cls = "sev-crit" if c.days_remaining < 30 else (
-                          "sev-high" if c.days_remaining < 90 else "good")
+                exp_cls = ("sev-crit" if c.days_remaining < 30
+                           else "sev-high" if c.days_remaining < 90 else "good")
                 san_str = escape(", ".join(c.san_entries[:8]))
                 if len(c.san_entries) > 8:
                     san_str += f" … (+{len(c.san_entries)-8})"
@@ -837,30 +1243,39 @@ class Reporter:
 
             findings_html = ""
             if r.findings:
-                rows = "".join(
-                    f'<tr><td class="{SEV_CSS.get(f.severity,"")}">{escape(f.severity)}</td>'
-                    f'<td>{escape(f.category)}</td>'
-                    f'<td>{escape(f.name)}</td>'
-                    f'<td>{escape(f.detail)}</td></tr>'
-                    for f in r.findings
-                )
+                rows_f = ""
+                for f in r.findings:
+                    remed_html = ""
+                    if f.remediation:
+                        remed_html = (
+                            f'<details class="remed"><summary>Ver remediación</summary>'
+                            f'<pre>{escape(f.remediation)}</pre></details>'
+                        )
+                    rows_f += (
+                        f'<tr><td class="{SEV_CSS.get(f.severity,"")}">{escape(f.severity)}</td>'
+                        f'<td>{escape(f.category)}</td>'
+                        f'<td>{escape(f.name)}</td>'
+                        f'<td>{escape(f.detail)}{remed_html}</td></tr>'
+                    )
                 findings_html = f"""
                 <table class="findings-table">
-                  <thead><tr><th>Severidad</th><th>Categoría</th><th>Hallazgo</th><th>Detalle</th></tr></thead>
-                  <tbody>{rows}</tbody>
+                  <thead><tr><th>Severidad</th><th>Categoría</th><th>Hallazgo</th><th>Detalle / Remediación</th></tr></thead>
+                  <tbody>{rows_f}</tbody>
                 </table>"""
             else:
                 findings_html = '<p class="good">✔ Sin hallazgos de seguridad</p>'
 
-            sev_cls = SEV_CSS.get(r.max_severity, "sev-info")
-            hsts_s  = escape(r.hsts_header) if r.hsts_header else '<span class="sev-high">AUSENTE</span>'
+            hsts_s = escape(r.hsts_header) if r.hsts_header else '<span class="sev-high">AUSENTE</span>'
 
             rows_html.append(f"""
             <div class="result-block">
-              <h2>
-                <span class="sev-badge {sev_cls}">{escape(r.max_severity)}</span>
-                {escape(r.target)}
-              </h2>
+              <div class="host-header">
+                <div class="grade-circle" style="background:{grade_hex}">{escape(grade)}</div>
+                <div class="host-info">
+                  <h2>{escape(r.target)}</h2>
+                  <p class="grade-desc">{grade_desc_h}</p>
+                </div>
+              </div>
               <div class="meta-row">
                 <span><b>Protocolo:</b> {escape(r.negotiated_protocol)}</span>
                 <span><b>Cipher:</b> {escape(r.negotiated_cipher)}</span>
@@ -880,7 +1295,7 @@ class Reporter:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VampSecure Labs — SSL Audit Report</title>
+<title>VampSecure Labs — SSL/TLS Audit Report</title>
 <style>
 :root {{
   --bg: #0d0d0d; --surface: #141414; --border: #1e1e1e;
@@ -893,22 +1308,19 @@ header {{ border-bottom: 1px solid var(--accent); padding-bottom: 16px; margin-b
 header h1 {{ color: var(--accent); font-size: 22px; letter-spacing: .1em; }}
 header p {{ color: var(--text-dim); font-size: 12px; margin-top: 4px; }}
 .result-block {{ background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 20px; margin-bottom: 20px; }}
-.result-block h2 {{ font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }}
+.host-header {{ display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }}
+.grade-circle {{ width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold; color: #fff; flex-shrink: 0; }}
+.host-info h2 {{ font-size: 16px; margin-bottom: 4px; }}
+.grade-desc {{ color: var(--text-dim); font-size: 12px; }}
 .result-block h3 {{ font-size: 13px; color: var(--text-dim); margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .07em; }}
 .meta-row {{ display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; color: var(--text-dim); margin-bottom: 14px; }}
 .meta-row b {{ color: var(--text); }}
-.sev-badge {{ font-size: 11px; padding: 2px 8px; border-radius: 3px; font-weight: bold; }}
 .sev-crit {{ color: var(--crit); }}
 .sev-high {{ color: var(--high); }}
 .sev-med  {{ color: var(--med); }}
 .sev-low  {{ color: var(--low); }}
 .sev-info {{ color: var(--text-dim); }}
 .good     {{ color: var(--good); }}
-.sev-badge.sev-crit {{ background: rgba(255,68,68,.15); }}
-.sev-badge.sev-high {{ background: rgba(255,136,0,.15); }}
-.sev-badge.sev-med  {{ background: rgba(255,204,0,.15); }}
-.sev-badge.sev-low  {{ background: rgba(68,136,255,.15); }}
-.sev-badge.sev-info {{ background: rgba(100,100,100,.15); }}
 .cert-block {{ background: var(--bg); border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 0 4px 4px 0; margin-bottom: 14px; }}
 .info-table td {{ padding: 4px 12px 4px 0; vertical-align: top; }}
 .info-table td:first-child {{ color: var(--text-dim); width: 120px; }}
@@ -916,6 +1328,9 @@ header p {{ color: var(--text-dim); font-size: 12px; margin-top: 4px; }}
 .findings-table th {{ text-align: left; padding: 6px 10px; color: var(--text-dim); border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; }}
 .findings-table td {{ padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }}
 .findings-table tr:last-child td {{ border-bottom: none; }}
+details.remed {{ margin-top: 6px; }}
+details.remed summary {{ cursor: pointer; color: var(--accent); font-size: 11px; }}
+details.remed pre {{ background: #0a0a0a; border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 11px; margin-top: 6px; overflow-x: auto; white-space: pre-wrap; }}
 footer {{ margin-top: 32px; text-align: center; color: var(--text-dim); font-size: 11px; }}
 </style>
 </head>
@@ -929,6 +1344,214 @@ footer {{ margin-top: 32px; text-align: center; color: var(--text-dim); font-siz
 </body>
 </html>"""
 
+    # ---------------------------------------------------------------- Markdown
+
+    def to_markdown(self, results: list[AuditResult]) -> str:
+        """
+        Genera un informe en formato Markdown incluible directamente en
+        documentación de auditoría o repositorios de informes.
+        """
+        generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines: list[str] = []
+
+        lines.append("# VampSecure Labs — Informe de Auditoría SSL/TLS")
+        lines.append("")
+        lines.append(f"**Herramienta:** {TOOL_NAME} v{VERSION}  ")
+        lines.append(f"**Generado:** {generated}  ")
+        lines.append(f"**Hosts analizados:** {len(results)}  ")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # Tabla resumen
+        lines.append("## Resumen Ejecutivo")
+        lines.append("")
+        lines.append("| Host:Puerto | Nota | Protocolo | Cert Expira | HSTS | Hallazgos C/H | Severidad Máx. |")
+        lines.append("|-------------|------|-----------|-------------|------|---------------|----------------|")
+        for r in results:
+            if r.error:
+                lines.append(f"| `{r.target}` | **F** | ERROR | — | — | — | ERROR |")
+                continue
+            days  = f"{r.cert.days_remaining}d" if r.cert else "?"
+            hsts  = "✔" if r.hsts_header else "✗"
+            crhi  = sum(1 for f in r.findings if f.severity in ("CRITICAL", "HIGH"))
+            lines.append(
+                f"| `{r.target}` | **{r.grade}** | {r.negotiated_protocol} "
+                f"| {days} | {hsts} | {crhi} | {r.max_severity} |"
+            )
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # Detalle por host
+        for r in results:
+            lines.append(f"## Host: `{r.target}`")
+            lines.append("")
+
+            if r.error:
+                lines.append(f"> ❌ **ERROR:** {r.error}")
+                lines.append("")
+                continue
+
+            grade_desc = GRADE_DESCRIPTION.get(r.grade, "")
+            lines.append(f"### 📊 Calificación: **{r.grade}** — {grade_desc}")
+            lines.append("")
+
+            # Info técnica
+            lines.append("| Campo | Valor |")
+            lines.append("|-------|-------|")
+            lines.append(f"| Protocolo negociado | `{r.negotiated_protocol}` |")
+            lines.append(f"| Cipher negociado | `{r.negotiated_cipher}` |")
+            prots = ", ".join(r.supported_protocols) if r.supported_protocols else "—"
+            lines.append(f"| Protocolos legacy aceptados | {prots} |")
+            hsts_val = f"`{r.hsts_header}`" if r.hsts_header else "**AUSENTE**"
+            lines.append(f"| HSTS | {hsts_val} |")
+            lines.append("")
+
+            # Certificado
+            if r.cert:
+                c = r.cert
+                lines.append("### Certificado X.509")
+                lines.append("")
+                lines.append("| Campo | Valor |")
+                lines.append("|-------|-------|")
+                lines.append(f"| Sujeto | `{c.subject}` |")
+                lines.append(f"| Emisor | `{c.issuer}` |")
+                lines.append(f"| Clave | {c.key_type} {c.key_bits} bits |")
+                lines.append(f"| Firma | {c.sig_algorithm} |")
+                not_after_s = c.not_after.date() if c.not_after else "?"
+                lines.append(f"| Expira | {not_after_s} ({c.days_remaining} días) |")
+                lines.append(f"| Autofirmado | {'⚠️ SÍ' if c.is_self_signed else '✔ No'} |")
+                if c.san_entries:
+                    san_md = ", ".join(f"`{s}`" for s in c.san_entries[:8])
+                    if len(c.san_entries) > 8:
+                        san_md += f" … (+{len(c.san_entries)-8})"
+                    lines.append(f"| SAN | {san_md} |")
+                lines.append("")
+
+            # Hallazgos
+            if r.findings:
+                lines.append("### 🔍 Hallazgos")
+                lines.append("")
+
+                severity_groups = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+                for sev in severity_groups:
+                    group = [f for f in r.findings if f.severity == sev]
+                    if not group:
+                        continue
+                    icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵", "INFO": "⚪"}.get(sev, "")
+                    lines.append(f"#### {icon} {sev}")
+                    lines.append("")
+                    for f in group:
+                        lines.append(f"**{f.name}**")
+                        lines.append(f"> {f.detail}")
+                        if f.remediation:
+                            lines.append("> ")
+                            lines.append("> **Remediación:**")
+                            lines.append("> ")
+                            lines.append("> ```")
+                            for rline in f.remediation.splitlines():
+                                lines.append(f"> {rline}")
+                            lines.append("> ```")
+                        lines.append("")
+
+                # Lista de pasos priorizados
+                priorizados = [f for f in r.findings if f.severity in ("CRITICAL", "HIGH") and f.remediation]
+                if priorizados:
+                    lines.append("### ✅ Pasos de remediación priorizados")
+                    lines.append("")
+                    for i, f in enumerate(priorizados, 1):
+                        lines.append(f"{i}. **[{f.severity}]** {f.name}")
+                    lines.append("")
+            else:
+                lines.append("### ✅ Sin hallazgos de seguridad")
+                lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+        lines.append(f"*Generado por {TOOL_NAME} v{VERSION} · VampSecure Studios · VampSecure Labs Security Research Division*  ")
+        lines.append("*Uso exclusivo en entornos autorizados. El uso no autorizado es ilegal.*")
+        lines.append("")
+
+        return "\n".join(lines)
+
+    # ---------------------------------------------------------------- CSV
+
+    def to_csv(self, results: list[AuditResult], base_path: str) -> tuple[str, str]:
+        """
+        Genera dos ficheros CSV:
+          - <base_path>          : resumen por host (una fila por host)
+          - <base_path>.findings : detalle de hallazgos (una fila por hallazgo)
+
+        Devuelve los dos paths como tupla.
+        """
+        import io
+
+        # Fichero 1: resumen por host
+        buf_hosts = io.StringIO()
+        writer_h = csv_module.writer(buf_hosts)
+        writer_h.writerow([
+            "host", "puerto", "nota", "descripcion_nota",
+            "protocolo", "cipher", "protocolos_legacy",
+            "cert_sujeto", "cert_emisor", "cert_clave", "cert_firma",
+            "cert_expira", "cert_dias_restantes", "cert_autofirmado",
+            "hsts", "hsts_valor",
+            "num_hallazgos", "hallazgos_critical", "hallazgos_high",
+            "hallazgos_medium", "hallazgos_low",
+            "severidad_maxima", "error", "timestamp",
+        ])
+        for r in results:
+            cert = r.cert
+            writer_h.writerow([
+                r.host, r.port,
+                r.grade, GRADE_DESCRIPTION.get(r.grade, ""),
+                r.negotiated_protocol, r.negotiated_cipher,
+                "|".join(r.supported_protocols),
+                cert.subject        if cert else "",
+                cert.issuer         if cert else "",
+                f"{cert.key_type} {cert.key_bits}b" if cert else "",
+                cert.sig_algorithm  if cert else "",
+                cert.not_after.date() if (cert and cert.not_after) else "",
+                cert.days_remaining if cert else "",
+                "SI" if (cert and cert.is_self_signed) else "NO" if cert else "",
+                "SI" if r.hsts_header else "NO",
+                r.hsts_header or "",
+                len(r.findings),
+                sum(1 for f in r.findings if f.severity == "CRITICAL"),
+                sum(1 for f in r.findings if f.severity == "HIGH"),
+                sum(1 for f in r.findings if f.severity == "MEDIUM"),
+                sum(1 for f in r.findings if f.severity == "LOW"),
+                r.max_severity,
+                r.error or "",
+                r.timestamp,
+            ])
+
+        # Fichero 2: hallazgos detallados
+        buf_findings = io.StringIO()
+        writer_f = csv_module.writer(buf_findings)
+        writer_f.writerow([
+            "host", "puerto", "nota_host",
+            "severidad", "categoria", "hallazgo", "detalle",
+            "cap_nota", "remediacion",
+        ])
+        for r in results:
+            for f in r.findings:
+                writer_f.writerow([
+                    r.host, r.port, r.grade,
+                    f.severity, f.category, f.name, f.detail,
+                    f.grade_cap,
+                    f.remediation.replace("\n", " | "),
+                ])
+
+        path_hosts    = base_path
+        path_findings = base_path + ".findings"
+
+        Path(path_hosts).write_text(buf_hosts.getvalue(), encoding="utf-8")
+        Path(path_findings).write_text(buf_findings.getvalue(), encoding="utf-8")
+
+        return path_hosts, path_findings
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -938,13 +1561,13 @@ def _parse_args() -> argparse.Namespace:
     """Parsea los argumentos de la línea de comandos."""
     p = argparse.ArgumentParser(
         prog=TOOL_NAME,
-        description=f"VampSecure Labs SSL Audit v{VERSION} — Auditor TLS/SSL profesional",
+        description=f"VampSecure Labs SSL Audit v{VERSION} — Auditor TLS/SSL con calificación SSLabs-style",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Ejemplos:
   vamp-ssl-audit -H ejemplo.com
-  vamp-ssl-audit -H ejemplo.com:8443 -H otro.com:443
+  vamp-ssl-audit -H ejemplo.com:8443 -H otro.com
   vamp-ssl-audit -H ejemplo.com --json salida.json --html informe.html
-  vamp-ssl-audit --file lista_hosts.txt --workers 10
+  vamp-ssl-audit --file lista_hosts.txt --workers 10 --markdown informe.md --csv resultados.csv
         """,
     )
     p.add_argument("-H", "--host", dest="hosts", metavar="HOST[:PUERTO]",
@@ -959,9 +1582,13 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--workers", type=int, default=5,
                    help="Hilos paralelos para múltiples hosts (default: 5)")
     p.add_argument("--json", metavar="FILE",
-                   help="Guardar resultado completo en JSON")
+                   help="Guardar resultado completo en JSON (incluye remediaciones)")
     p.add_argument("--html", metavar="FILE",
-                   help="Guardar informe en HTML")
+                   help="Guardar informe en HTML dark-theme (incluye remediaciones colapsables)")
+    p.add_argument("--markdown", metavar="FILE",
+                   help="Guardar informe en Markdown (apto para repositorios de auditoría)")
+    p.add_argument("--csv", metavar="FILE",
+                   help="Guardar resumen en CSV (genera además FILE.findings con detalle de hallazgos)")
     return p.parse_args()
 
 
@@ -974,8 +1601,10 @@ def _resolve_targets(args: argparse.Namespace) -> list[tuple[str, int]]:
         if not path.is_file():
             console.print(f"[bold red]ERROR:[/] Fichero no encontrado: {args.file}")
             sys.exit(1)
-        raw.extend(line.strip() for line in path.read_text().splitlines()
-                   if line.strip() and not line.startswith("#"))
+        raw.extend(
+            line.strip() for line in path.read_text().splitlines()
+            if line.strip() and not line.startswith("#")
+        )
 
     if not raw:
         console.print("[bold red]ERROR:[/] Indica al menos un host con -H o --file")
@@ -1000,9 +1629,9 @@ def main() -> None:
     """Punto de entrada principal."""
     console.print(BANNER, style="bold magenta")
 
-    args    = _parse_args()
-    targets = _resolve_targets(args)
-    auditor = SSLAuditor(timeout=args.timeout)
+    args     = _parse_args()
+    targets  = _resolve_targets(args)
+    auditor  = SSLAuditor(timeout=args.timeout)
     reporter = Reporter(console)
 
     console.print(f"[bold cyan]Auditando {len(targets)} host(s)…[/]\n")
@@ -1020,23 +1649,30 @@ def main() -> None:
                 for future in concurrent.futures.as_completed(futures):
                     results.append(future.result())
 
-    # Ordenar por host
     results.sort(key=lambda r: (r.host, r.port))
 
-    # Mostrar resultados
     for r in results:
         reporter.print_result(r)
 
     reporter.print_summary(results)
 
-    # Guardar ficheros
+    # Exportar ficheros solicitados
     if args.json:
         Path(args.json).write_text(reporter.to_json(results), encoding="utf-8")
-        console.print(f"\n[green]✔[/] JSON guardado en {args.json}")
+        console.print(f"\n[green]✔[/] JSON guardado en [bold]{args.json}[/]")
 
     if args.html:
         Path(args.html).write_text(reporter.to_html(results), encoding="utf-8")
-        console.print(f"[green]✔[/] HTML guardado en {args.html}")
+        console.print(f"[green]✔[/] HTML guardado en [bold]{args.html}[/]")
+
+    if args.markdown:
+        Path(args.markdown).write_text(reporter.to_markdown(results), encoding="utf-8")
+        console.print(f"[green]✔[/] Markdown guardado en [bold]{args.markdown}[/]")
+
+    if args.csv:
+        p_hosts, p_findings = reporter.to_csv(results, args.csv)
+        console.print(f"[green]✔[/] CSV resumen guardado en [bold]{p_hosts}[/]")
+        console.print(f"[green]✔[/] CSV hallazgos guardado en [bold]{p_findings}[/]")
 
     # Exit code según severidad máxima global
     max_sev = "INFO"
