@@ -1,23 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Credenciales y secretos
 .env
 .env.*
 !.env.example
 *.key
 *.pem
-*.crt
 *.p12
 *.pfx
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
-dist/
-build/
-*.egg-info/
-.DS_Store
-*.json
-!package.json
+*.crt
+
+# Outputs generados
 *.html
-scope.txt
-nexus_tasks.sh
-.rotated-secrets.txt
+*.pdf
+*.json
+*.sarif
+*.csv
+*.log
+
+# Editores y sistema operativo
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
