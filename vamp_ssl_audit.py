@@ -714,9 +714,14 @@ class SSLAuditor:
         except Exception:
             pass
 
-        # Validez temporal
-        info.not_before = cert.not_valid_before_utc
-        info.not_after  = cert.not_valid_after_utc
+        # Validez temporal — _utc añadido en cryptography 42.x; fallback para 41.x
+        try:
+            info.not_before = cert.not_valid_before_utc
+            info.not_after  = cert.not_valid_after_utc
+        except AttributeError:
+            from datetime import timezone as _tz
+            info.not_before = cert.not_valid_before.replace(tzinfo=_tz.utc)
+            info.not_after  = cert.not_valid_after.replace(tzinfo=_tz.utc)
         now             = datetime.now(timezone.utc)
         info.days_remaining = (info.not_after - now).days
 
