@@ -56,6 +56,27 @@ usage: vamp_ssl_audit.py [-h] [-H HOST[:PORT]] [--file FILE]
 vamp-ssl-audit — TLS/SSL Professional Auditor (VampSecure Labs)
 ```
 
+## Try it now — public test targets
+
+These hosts are publicly provided for testing TLS tools:
+
+```bash
+# Expired certificate → grade F
+python3 vamp_ssl_audit.py -H expired.badssl.com
+
+# Self-signed certificate → grade T
+python3 vamp_ssl_audit.py -H self-signed.badssl.com
+
+# TLS 1.0 still accepted → HIGH finding, grade cap B
+python3 vamp_ssl_audit.py -H tls-v1.badssl.com
+
+# SHA-1 signature → HIGH finding
+python3 vamp_ssl_audit.py -H sha1-2016.badssl.com
+
+# Clean A grade (standard well-configured host)
+python3 vamp_ssl_audit.py -H badssl.com
+```
+
 ## Examples
 
 ```bash
@@ -75,6 +96,9 @@ python3 vamp_ssl_audit.py --file hosts.txt --workers 10
 python3 vamp_ssl_audit.py -H example.com \
     --json results.json --html report.html --markdown report.md --csv report.csv
 
+# With Let's Encrypt auto-renewal active, 90d alerts are noise — use 30d instead
+python3 vamp_ssl_audit.py --file hosts.txt --warn-days 30
+
 # Scan a non-HTTPS service on a custom default port
 python3 vamp_ssl_audit.py --file smtp_hosts.txt --port 587
 
@@ -82,6 +106,40 @@ python3 vamp_ssl_audit.py --file smtp_hosts.txt --port 587
 python3 vamp_ssl_audit.py --file hosts.txt \
     --client "Acme Corp" --engagement "TLS Configuration Review Q3 2026" \
     --auditor "J. Smith" --report-html client_report.html --report-pdf client_report.pdf
+```
+
+## CI/CD Integration
+
+Drop this into `.github/workflows/ssl-audit.yml` to gate your pipeline on TLS grade:
+
+```yaml
+name: TLS Audit
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # weekly on Monday
+  workflow_dispatch:
+
+jobs:
+  ssl-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install vamp-ssl-audit
+      - run: |
+          vamp-ssl-audit \
+            -H yourdomain.com \
+            -H api.yourdomain.com \
+            --warn-days 30 \
+            --json ssl-results.json \
+            --markdown ssl-report.md
+        # Exit code 1 = HIGH findings, 2 = CRITICAL findings → pipeline fails
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ssl-audit-report
+          path: ssl-report.md
 ```
 
 ## CLI Reference
@@ -97,6 +155,7 @@ python3 vamp_ssl_audit.py --file hosts.txt \
 | `--html FILE` | — | Export dark-theme HTML report with grade badge |
 | `--markdown FILE` | — | Export Markdown report |
 | `--csv FILE` | — | Export CSV summary (+ `FILE.findings` detail file) |
+| `--warn-days N` | 90 | Days ahead to issue MEDIUM cert-expiry alert. With Let's Encrypt auto-renewal, `--warn-days 30` avoids noise (renewal runs at 30d, not 90d) |
 | `--client TEXT` | — | Client name for VSL engagement report |
 | `--engagement TEXT` | — | Engagement title for VSL engagement report |
 | `--auditor TEXT` | — | Auditor name for VSL engagement report |
@@ -120,9 +179,9 @@ python3 vamp_ssl_audit.py --file hosts.txt \
 
 | Grade | Criteria |
 |-------|----------|
-| A+ | TLS 1.3 active, complete HSTS, no legacy protocols or weak ciphers |
-| A | Good configuration; no significant issues |
-| A- | Good configuration; HSTS incomplete or TLS 1.3 not offered |
+| A+ | TLS 1.3 active, HSTS present and complete, no legacy protocols or weak ciphers |
+| A | Good configuration; HSTS absent or TLS 1.3 not offered |
+| A- | Good configuration; HSTS incomplete (short max-age, no includeSubDomains) |
 | B | TLS 1.0/1.1 present, 3DES, SHA-1 signature, or RSA < 2048 |
 | C | SSLv3 accepted, RC4, or MD5 signature algorithm |
 | D | Very poor configuration |

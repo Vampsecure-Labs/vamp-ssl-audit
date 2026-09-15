@@ -255,6 +255,10 @@ def compute_grade(result: "AuditResult") -> str:
         if grade == "A+" and result.negotiated_protocol != "TLSv1.3":
             grade = _apply_cap(grade, "A")
 
+        # A+ requiere HSTS verificado — si es None (ausente o petición HTTP fallida) → máximo A
+        if grade == "A+" and result.hsts_header is None:
+            grade = _apply_cap(grade, "A")
+
         # HSTS: analizar si es completo para decidir entre A+ / A / A-
         if result.hsts_header:
             has_subs    = "includesubdomains" in result.hsts_header.lower()
@@ -511,8 +515,9 @@ class SSLAuditor:
       5. Cálculo de nota SSLabs-style
     """
 
-    def __init__(self, timeout: int = 10) -> None:
-        self._timeout = timeout
+    def __init__(self, timeout: int = 10, warn_days: int = 90) -> None:
+        self._timeout  = timeout
+        self._warn_days = warn_days
 
     # ------------------------------------------------------------------ API pública
 
@@ -752,11 +757,11 @@ class SSLAuditor:
                 remediation=_REMED_CERT_EXPIRING,
                 grade_cap="B",
             ))
-        elif info.days_remaining < 90:
+        elif self._warn_days > 30 and info.days_remaining < self._warn_days:
             result.findings.append(Finding(
                 severity="MEDIUM",
                 category="Certificado",
-                name="Certificado caduca en < 90 días",
+                name=f"Certificado caduca en < {self._warn_days} días",
                 detail=f"Expira en {info.days_remaining} días ({info.not_after.date()})",
                 remediation=_REMED_CERT_EXPIRING,
             ))
@@ -1594,6 +1599,9 @@ def _parse_args() -> argparse.Namespace:
                    help="Guardar informe en Markdown (apto para repositorios de auditoría)")
     p.add_argument("--csv", metavar="FILE",
                    help="Guardar resumen en CSV (genera además FILE.findings con detalle de hallazgos)")
+    p.add_argument("--warn-days", type=int, default=90, metavar="N",
+                   help="Días de antelación para alerta MEDIUM de caducidad (default: 90). "
+                        "Con Let's Encrypt y renovación automática activa, usa --warn-days 30")
 
     # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
     # --report-scope, --report-html, --report-pdf)
@@ -1696,7 +1704,7 @@ def main() -> None:
 
     args     = _parse_args()
     targets  = _resolve_targets(args)
-    auditor  = SSLAuditor(timeout=args.timeout)
+    auditor  = SSLAuditor(timeout=args.timeout, warn_days=args.warn_days)
     reporter = Reporter(console)
 
     console.print(f"[bold cyan]Auditando {len(targets)} host(s)…[/]\n")
