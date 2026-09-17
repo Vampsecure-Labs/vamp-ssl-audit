@@ -71,6 +71,7 @@ import csv as csv_module
 import json
 import socket
 import ssl
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -90,7 +91,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-VERSION   = "2.0"
+VERSION   = "1.1.0"
 TOOL_NAME = "vamp-ssl-audit"
 
 console = Console()
@@ -101,7 +102,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-ssl-audit v2.0 · TLS/SSL Professional Auditor
+  vamp-ssl-audit v1.1.0 · TLS/SSL Professional Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -250,6 +251,17 @@ def compute_grade(result: "AuditResult") -> str:
             grade = _apply_cap(grade, f.grade_cap)
 
     # Lógica adicional que no genera hallazgo individual pero sí afecta la nota
+    # Modo estricto TLS 1.3: si el servidor acepta protocolos < TLS 1.3, nota máxima B
+    if result.strict_tls13:
+        proto_debajo_tls13 = (
+            set(result.supported_protocols)        # SSLv3, TLS 1.0, TLS 1.1, TLS 1.2
+            | ({"default:" + result.negotiated_protocol}
+               if result.negotiated_protocol not in ("TLSv1.3", "")
+               else set())
+        )
+        if proto_debajo_tls13:
+            grade = _apply_cap(grade, "B")
+
     if grade in ("A+", "A", "A-"):
         # TLS 1.3 requerido para A+
         if grade == "A+" and result.negotiated_protocol != "TLSv1.3":
@@ -427,6 +439,45 @@ _REMED_DSA = (
     "DSA está depreciado en la mayoría de CAs desde 2015."
 )
 
+# Remediación para OCSP
+_REMED_OCSP_NO_URL = (
+    "El certificado no incluye una URL de responder OCSP en la extensión AIA.\n"
+    "Al renovar el certificado, asegurarse de que la CA incluye OCSP en la AIA.\n"
+    "Las CAs públicas modernas (Let's Encrypt, DigiCert, etc.) la incluyen siempre.\n"
+    "Sin OCSP URL, los clientes no pueden verificar la revocación del certificado."
+)
+
+_REMED_OCSP_NO_STAPLING = (
+    "Habilitar OCSP Stapling en el servidor para enviar la respuesta OCSP al cliente:\n"
+    "  nginx:   ssl_stapling on;\n"
+    "           ssl_stapling_verify on;\n"
+    "           resolver 8.8.8.8 1.1.1.1 valid=300s;\n"
+    "  apache:  SSLUseStapling on\n"
+    "           SSLStaplingCache 'shmcb:/var/run/ocsp(128000)'\n"
+    "  haproxy: tune.ssl.default-dh-param 2048  # + configurar resolvers\n"
+    "OCSP Stapling evita que el cliente contacte al responder OCSP directamente,\n"
+    "mejorando privacidad y rendimiento. Ref: RFC 6961"
+)
+
+# Remediación para CT logs
+_REMED_CT_NO_LOG = (
+    "El certificado no aparece en los Certificate Transparency logs (crt.sh).\n"
+    "Posibles causas:\n"
+    "  · Certificado muy reciente (CT puede tardar horas en indexarlo)\n"
+    "  · Certificado emitido por una CA privada/interna\n"
+    "  · Certificado no enviado a CT (non-compliant CA)\n"
+    "A partir de Chrome 68, los certificados sin SCT son rechazados.\n"
+    "Ref: RFC 9162 — Certificate Transparency Version 2.0"
+)
+
+_REMED_NO_SCT = (
+    "El certificado no contiene SCTs (Signed Certificate Timestamps) embebidos.\n"
+    "Los SCTs son obligatorios para que los navegadores modernos confíen en el cert.\n"
+    "Solución: Obtener el certificado de una CA que soporte CT y embeba SCTs.\n"
+    "Todas las CAs públicas de confianza (Let's Encrypt, DigiCert, etc.) los incluyen.\n"
+    "Ref: RFC 6962 §3.3 — los SCTs pueden venir embebidos en el cert o via TLS extension"
+)
+
 # ---------------------------------------------------------------------------
 # Estructuras de datos
 # ---------------------------------------------------------------------------
@@ -487,6 +538,8 @@ class AuditResult:
     grade:                 str = ""
     # Error fatal (host no alcanzable, etc.)
     error:                 Optional[str] = None
+    # Modo estricto TLS 1.3 (--strict-tls13)
+    strict_tls13:          bool = False
 
     @property
     def max_severity(self) -> str:
@@ -515,9 +568,15 @@ class SSLAuditor:
       5. Cálculo de nota SSLabs-style
     """
 
-    def __init__(self, timeout: int = 10, warn_days: int = 90) -> None:
-        self._timeout  = timeout
-        self._warn_days = warn_days
+    def __init__(
+        self,
+        timeout: int = 10,
+        warn_days: int = 90,
+        strict_tls13: bool = False,
+    ) -> None:
+        self._timeout     = timeout
+        self._warn_days   = warn_days
+        self._strict_tls13 = strict_tls13
 
     # ------------------------------------------------------------------ API pública
 
@@ -527,10 +586,13 @@ class SSLAuditor:
             host=host,
             port=port,
             timestamp=datetime.now(timezone.utc).isoformat(),
+            strict_tls13=self._strict_tls13,
         )
         try:
             self._phase_default_handshake(result)
             self._phase_legacy_protocols(result)
+            self._phase_ocsp_stapling(result)
+            self._phase_ct_logs(result)
             self._phase_http_headers(result)
         except Exception as exc:
             result.error = str(exc)
@@ -613,6 +675,7 @@ class SSLAuditor:
         """
         Intenta conexiones forzadas con versiones antiguas de TLS.
         Si el servidor acepta SSLv3/TLS1.0/TLS1.1, genera un hallazgo.
+        En modo --strict-tls13 también comprueba TLS 1.2.
         """
         legacy_map: list[tuple[str, ssl.TLSVersion, ssl.TLSVersion]] = []
 
@@ -627,20 +690,46 @@ class SSLAuditor:
         except AttributeError:
             pass
 
+        # En modo estricto TLS 1.3, también verificar si acepta TLS 1.2
+        if self._strict_tls13:
+            try:
+                legacy_map.append(("TLS 1.2", ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2))
+            except AttributeError:
+                pass
+
         for label, min_v, max_v in legacy_map:
             accepted = self._test_protocol_version(result.host, result.port, min_v, max_v)
             if accepted:
                 result.supported_protocols.append(label)
-                sev, detail = PROTOCOL_RISK.get(label, ("HIGH", "Protocolo obsoleto"))
-                cap = PROTOCOL_GRADE_CAP.get(label, "B")
-                result.findings.append(Finding(
-                    severity=sev,
-                    category="Protocolo",
-                    name=f"Soporta {label}",
-                    detail=detail,
-                    remediation=_REMED_TLS_LEGACY,
-                    grade_cap=cap,
-                ))
+                # TLS 1.2 en modo estricto: hallazgo MEDIUM (no meramente INFO)
+                if label == "TLS 1.2" and self._strict_tls13:
+                    result.findings.append(Finding(
+                        severity="MEDIUM",
+                        category="Protocolo",
+                        name="Soporta TLS 1.2 (modo --strict-tls13 activo)",
+                        detail=(
+                            "El servidor acepta TLS 1.2 además de TLS 1.3. "
+                            "En entornos que exigen exclusividad TLS 1.3, esto reduce la nota máxima a B."
+                        ),
+                        remediation=(
+                            "Configurar el servidor para aceptar únicamente TLS 1.3:\n"
+                            "  nginx:   ssl_protocols TLSv1.3;\n"
+                            "  apache:  SSLProtocol -all +TLSv1.3\n"
+                            "  haproxy: bind *:443 ssl-min-ver TLSv1.3"
+                        ),
+                        grade_cap="B",
+                    ))
+                else:
+                    sev, detail = PROTOCOL_RISK.get(label, ("HIGH", "Protocolo obsoleto"))
+                    cap = PROTOCOL_GRADE_CAP.get(label, "B")
+                    result.findings.append(Finding(
+                        severity=sev,
+                        category="Protocolo",
+                        name=f"Soporta {label}",
+                        detail=detail,
+                        remediation=_REMED_TLS_LEGACY,
+                        grade_cap=cap,
+                    ))
             else:
                 result.unsupported_protocols.append(label)
 
@@ -992,6 +1081,190 @@ class SSLAuditor:
                     grade_cap=cap,
                 ))
                 return  # Un solo hallazgo por cipher
+
+    # --------------------------------------------------------- Fase nueva: OCSP Stapling
+
+    def _phase_ocsp_stapling(self, result: AuditResult) -> None:
+        """
+        Comprueba si el certificado tiene URL OCSP y si el servidor envía
+        OCSP Stapling (respuesta OCSP embebida en el handshake TLS).
+
+        Severidades:
+          MEDIUM — el certificado no tiene URL OCSP (sin posibilidad de revocación online)
+          LOW    — tiene URL OCSP pero el servidor no devuelve stapling
+        """
+        # Solo proceder si hay certificado válido y el host es accesible
+        if not result.cert or result.error:
+            return
+
+        # Obtener el certificado PEM para inspeccionar extensiones
+        try:
+            pem = ssl.get_server_certificate(
+                (result.host, result.port),
+                timeout=self._timeout,
+            )
+            cert_obj = x509.load_pem_x509_certificate(pem.encode())
+        except Exception:
+            return  # No se puede obtener el cert; la fase principal ya lo gestionó
+
+        # Comprobar URL OCSP en la extensión Authority Information Access (AIA)
+        ocsp_url: Optional[str] = None
+        try:
+            aia = cert_obj.extensions.get_extension_for_oid(
+                ExtensionOID.AUTHORITY_INFORMATION_ACCESS
+            )
+            for access in aia.value:
+                # OID OCSP: 1.3.6.1.5.5.7.48.1
+                if access.access_method.dotted_string == "1.3.6.1.5.5.7.48.1":
+                    ocsp_url = access.access_location.value
+                    break
+        except x509.ExtensionNotFound:
+            pass
+        except Exception:
+            pass
+
+        if not ocsp_url:
+            result.findings.append(Finding(
+                severity="MEDIUM",
+                category="Certificado",
+                name="Sin URL OCSP en el certificado",
+                detail=(
+                    "El certificado no contiene una URL de responder OCSP en la extensión AIA. "
+                    "Sin ella, los clientes no pueden verificar el estado de revocación en tiempo real."
+                ),
+                remediation=_REMED_OCSP_NO_URL,
+            ))
+            return
+
+        # Intentar detectar OCSP Stapling usando openssl s_client -status
+        stapling_found = False
+        try:
+            proc = subprocess.run(
+                [
+                    "openssl", "s_client",
+                    "-connect", f"{result.host}:{result.port}",
+                    "-servername", result.host,
+                    "-status",
+                    "-brief",
+                ],
+                input=b"Q\n",
+                capture_output=True,
+                timeout=self._timeout + 5,
+            )
+            salida = proc.stdout.decode(errors="replace") + proc.stderr.decode(errors="replace")
+            # La respuesta OCSP stapled contiene esta cadena en la salida de openssl
+            stapling_found = (
+                "OCSP Response Status: successful" in salida
+                or "OCSP response:" in salida.lower()
+                and "no response sent" not in salida.lower()
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            # openssl no disponible o timeout — no se puede verificar stapling
+            return
+        except Exception:
+            return
+
+        if not stapling_found:
+            result.findings.append(Finding(
+                severity="LOW",
+                category="Certificado",
+                name="OCSP Stapling no detectado",
+                detail=(
+                    f"El certificado tiene URL OCSP ({ocsp_url}) pero el servidor "
+                    "no envía una respuesta OCSP stapled en el handshake TLS. "
+                    "Esto obliga al cliente a contactar directamente al responder OCSP, "
+                    "ralentizando la conexión y filtrando qué sitios visita el usuario."
+                ),
+                remediation=_REMED_OCSP_NO_STAPLING,
+            ))
+
+    # --------------------------------------------------------- Fase nueva: CT Logs
+
+    def _phase_ct_logs(self, result: AuditResult) -> None:
+        """
+        Verifica que el certificado aparece en Certificate Transparency logs (crt.sh)
+        y que contiene SCTs (Signed Certificate Timestamps) embebidos.
+
+        Severidades:
+          MEDIUM — serial del cert no encontrado en CT logs de crt.sh
+          LOW    — cert sin SCTs embebidos (puede tenerlos por TLS extension o OCSP)
+        """
+        if not result.cert or result.error:
+            return
+
+        hostname = result.host
+        serial   = result.cert.serial
+
+        # ── Comprobación 1: SCTs embebidos en el certificado ──────────────────
+        # OID de la extensión SCT embebida: 1.3.6.1.4.1.11129.2.4.2
+        try:
+            pem = ssl.get_server_certificate(
+                (result.host, result.port),
+                timeout=self._timeout,
+            )
+            cert_obj = x509.load_pem_x509_certificate(pem.encode())
+            sct_oid  = x509.ObjectIdentifier("1.3.6.1.4.1.11129.2.4.2")
+            try:
+                cert_obj.extensions.get_extension_for_oid(sct_oid)
+                has_sct_embedded = True
+            except x509.ExtensionNotFound:
+                has_sct_embedded = False
+        except Exception:
+            has_sct_embedded = None  # No se pudo verificar
+
+        if has_sct_embedded is False:
+            result.findings.append(Finding(
+                severity="LOW",
+                category="Certificado",
+                name="Sin SCTs embebidos en el certificado",
+                detail=(
+                    "El certificado no contiene Signed Certificate Timestamps (SCTs) embebidos. "
+                    "Los SCTs son obligatorios para que navegadores como Chrome confíen en el certificado. "
+                    "Pueden entregarse también vía extensión TLS o respuesta OCSP, "
+                    "pero la forma embebida es la más robusta."
+                ),
+                remediation=_REMED_NO_SCT,
+            ))
+
+        # ── Comprobación 2: consultar crt.sh ─────────────────────────────────
+        try:
+            url     = f"https://crt.sh/?q={hostname}&output=json"
+            req_obj = urllib.request.Request(
+                url,
+                headers={"User-Agent": f"VampSecureLabs-SSLAudit/{VERSION}"},
+            )
+            with urllib.request.urlopen(req_obj, timeout=self._timeout) as resp:
+                datos = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return  # crt.sh no accesible — omitir sin generar hallazgo
+
+        # Normalizar el serial del certificado para comparación
+        serial_norm = serial.upper().lstrip("0") if serial else ""
+
+        found_in_ct = False
+        for entrada in datos:
+            entry_serial = str(entrada.get("serial_number", "")).upper().lstrip("0")
+            if serial_norm and (
+                serial_norm == entry_serial
+                or serial_norm in entry_serial
+                or entry_serial in serial_norm
+            ):
+                found_in_ct = True
+                break
+
+        if not found_in_ct and serial_norm:
+            result.findings.append(Finding(
+                severity="MEDIUM",
+                category="Certificado",
+                name="Certificado no encontrado en CT logs (crt.sh)",
+                detail=(
+                    f"El certificado con serial {result.cert.serial} para '{hostname}' "
+                    "no fue encontrado en los Certificate Transparency logs consultados en crt.sh. "
+                    "Posibles causas: cert emitido por CA privada, emisión muy reciente "
+                    "(CT puede tardar horas en indexarlo) o CA no cumple con CT."
+                ),
+                remediation=_REMED_CT_NO_LOG,
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -1602,6 +1875,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--warn-days", type=int, default=90, metavar="N",
                    help="Días de antelación para alerta MEDIUM de caducidad (default: 90). "
                         "Con Let's Encrypt y renovación automática activa, usa --warn-days 30")
+    p.add_argument("--strict-tls13", action="store_true", default=False,
+                   help="Modo estricto TLS 1.3: si el servidor soporta TLS 1.2 o inferior, "
+                        "la nota máxima es B. Útil para entornos que exigen TLS 1.3 exclusivo.")
 
     # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
     # --report-scope, --report-html, --report-pdf)
@@ -1704,7 +1980,11 @@ def main() -> None:
 
     args     = _parse_args()
     targets  = _resolve_targets(args)
-    auditor  = SSLAuditor(timeout=args.timeout, warn_days=args.warn_days)
+    auditor  = SSLAuditor(
+        timeout=args.timeout,
+        warn_days=args.warn_days,
+        strict_tls13=getattr(args, "strict_tls13", False),
+    )
     reporter = Reporter(console)
 
     console.print(f"[bold cyan]Auditando {len(targets)} host(s)…[/]\n")
