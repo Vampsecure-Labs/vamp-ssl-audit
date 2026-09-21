@@ -91,7 +91,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-VERSION   = "1.1.0"
+VERSION   = "1.2.0"
 TOOL_NAME = "vamp-ssl-audit"
 
 console = Console()
@@ -102,7 +102,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-ssl-audit v1.1.0 · TLS/SSL Professional Auditor
+  vamp-ssl-audit v1.2.0 · TLS/SSL Professional Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -478,6 +478,38 @@ _REMED_NO_SCT = (
     "Ref: RFC 6962 §3.3 — los SCTs pueden venir embebidos en el cert o via TLS extension"
 )
 
+# Remediación para SC081v3 (CA/B Forum Ballot SC081, vigente desde marzo 2026)
+_REMED_SC081V3 = (
+    "Renovar el certificado con validez máxima de 200 días (CA/B Forum SC081v3, vigente marzo 2026):\n"
+    "  Let's Encrypt:  certbot renew --force-renewal  (renueva a ~90 días automáticamente)\n"
+    "  Comercial:      al renovar, solicitar certificado de máximo 200 días de validez\n"
+    "  Automatización: usar ACME o integración CI/CD para renovar antes de los 200 días\n"
+    "Reducción gradual SC081v3: 200 días (mar 2026) → 90 días (2027) → 47 días (2029).\n"
+    "Ref: https://cabforum.org/2024/03/15/ballot-sc081v3-validity-period-reduction"
+)
+
+# Remediación para Log4j TLS bypass (CVE-2026-34477)
+_REMED_LOG4J_TLS = (
+    "Actualizar Log4j a versión >= 2.24.0 para mitigar CVE-2026-34477 (TLS bypass via JMSAppender):\n"
+    "  Maven:   <log4j.version>2.24.0</log4j.version>\n"
+    "  Gradle:  implementation 'org.apache.logging.log4j:log4j-core:2.24.0'\n"
+    "  Mitigación inmediata: deshabilitar JMSAppender con log4j2.enableJndiJms=false\n"
+    "  Revisar configuración mTLS para que el servidor valide el certificado del cliente.\n"
+    "Ref: CVE-2026-34477 · Apache Log4j Security Advisories · https://logging.apache.org/log4j/2.x/security.html"
+)
+
+# Remediación para TLS session tickets de larga duración sin rotación
+_REMED_SESSION_TICKETS = (
+    "Configurar rotación frecuente de TLS session ticket keys:\n"
+    "  nginx:   ssl_session_tickets off;  # deshabilitar si no se necesita resumption\n"
+    "           # o rotar la clave periódicamente (cada hora) con ssl_session_ticket_key\n"
+    "  apache:  SSLSessionTickets off  # Apache 2.4.11+\n"
+    "  haproxy: ssl-default-bind-options no-tls-tickets  # deshabilitar tickets\n"
+    "Los tickets de larga duración sin rotación permiten descifrar tráfico capturado\n"
+    "si la clave del ticket se compromete, debilitando la forward secrecy.\n"
+    "Ref: RFC 5077 §5 — TLS Session Ticket Security Considerations"
+)
+
 # ---------------------------------------------------------------------------
 # Estructuras de datos
 # ---------------------------------------------------------------------------
@@ -593,6 +625,9 @@ class SSLAuditor:
             self._phase_legacy_protocols(result)
             self._phase_ocsp_stapling(result)
             self._phase_ct_logs(result)
+            self._phase_sc081v3(result)
+            self._phase_log4j_tls_bypass(result)
+            self._phase_session_resumption(result)
             self._phase_http_headers(result)
         except Exception as exc:
             result.error = str(exc)
@@ -1081,6 +1116,240 @@ class SSLAuditor:
                     grade_cap=cap,
                 ))
                 return  # Un solo hallazgo por cipher
+
+    # --------------------------------------------------------- Fase nueva: SC081v3 compliance
+
+    def _phase_sc081v3(self, result: AuditResult) -> None:
+        """
+        Verifica conformidad con CA/B Forum Ballot SC081v3 (vigente desde marzo 2026):
+        validez máxima de certificados TLS públicos limitada a 200 días.
+
+        SSL-SC081-001 (HIGH/CRITICAL): certificado excede 200 días (> 398 = CRITICAL)
+        SSL-SC081-002 (MEDIUM): certificado próximo a expirar en ciclos cortos de SC081v3
+
+        Nota: solo se aplica a certificados de CAs reconocidas (no autofirmados).
+        """
+        if not result.cert or result.error:
+            return
+
+        cert_info = result.cert
+
+        # Solo aplicar a certificados emitidos por CAs reconocidas (no autofirmados)
+        if cert_info.is_self_signed:
+            return
+
+        if not cert_info.not_before or not cert_info.not_after:
+            return
+
+        # Calcular periodo de validez total del certificado en días
+        total_dias = (cert_info.not_after - cert_info.not_before).days
+
+        if total_dias > 398:
+            # Emitido antes de SC081v3 o incumplimiento flagrante del límite anterior del CA/B Forum
+            result.findings.append(Finding(
+                severity="CRITICAL",
+                category="Certificado SC081v3",
+                name="SSL-SC081-001: Certificado muy largo (> 398 días, no conforme SC081v3)",
+                detail=(
+                    f"Validez total: {total_dias} días "
+                    f"(emisión: {cert_info.not_before.date()}, expiración: {cert_info.not_after.date()}). "
+                    "Excede el límite anterior del CA/B Forum (398 días) y el nuevo límite SC081v3 (200 días, "
+                    "vigente desde marzo 2026). Certificado probablemente emitido antes de SC081v3 "
+                    "o por una CA no conforme."
+                ),
+                remediation=_REMED_SC081V3,
+                grade_cap="B",
+            ))
+        elif total_dias > 200:
+            # Supera el nuevo límite SC081v3 de 200 días pero dentro del límite anterior
+            result.findings.append(Finding(
+                severity="HIGH",
+                category="Certificado SC081v3",
+                name="SSL-SC081-001: Certificado excede 200 días (CA/B Forum SC081v3)",
+                detail=(
+                    f"Validez total: {total_dias} días "
+                    f"(emisión: {cert_info.not_before.date()}, expiración: {cert_info.not_after.date()}). "
+                    "CA/B Forum Ballot SC081v3 (vigente desde marzo 2026) limita los certificados TLS "
+                    "públicos a un máximo de 200 días. "
+                    "Reducción gradual: 90 días en 2027, 47 días en 2029."
+                ),
+                remediation=_REMED_SC081V3,
+            ))
+
+        # SSL-SC081-002: certificado próximo a expirar (< 30 días), contexto ciclos cortos SC081v3
+        # Evitar duplicado con hallazgos de expiración ya generados en _parse_cert
+        existing_expiry = any(
+            "expira" in f.name.lower() and f.category == "Certificado"
+            for f in result.findings
+        )
+        if not existing_expiry and 0 <= cert_info.days_remaining < 30:
+            result.findings.append(Finding(
+                severity="MEDIUM",
+                category="Certificado SC081v3",
+                name="SSL-SC081-002: Certificado expira en < 30 días (SC081v3)",
+                detail=(
+                    f"El certificado expira en {cert_info.days_remaining} días "
+                    f"({cert_info.not_after.date()}). "
+                    "Con los ciclos cortos de SC081v3, la renovación frecuente y automatizada es obligatoria. "
+                    "Se recomienda automatizar con ACME/certbot."
+                ),
+                remediation=_REMED_CERT_EXPIRING,
+            ))
+
+    # --------------------------------------------------------- Fase nueva: CVE-2026-34477 Log4j TLS bypass
+
+    def _phase_log4j_tls_bypass(self, result: AuditResult) -> None:
+        """
+        Detección indirecta de CVE-2026-34477 — Log4j TLS bypass via JMSAppender.
+
+        Busca indicadores de stack Java (Apache Tomcat/Coyote, JBoss, etc.) en cabeceras
+        HTTP del servidor y verifica si el endpoint TLS acepta conexiones sin SNI, lo que
+        indica configuración permisiva potencialmente explotable con Log4j <= 2.23.1.
+
+        SSL-LOG4J-001 (HIGH): servidor Java con TLS sin validación estricta de SNI
+        """
+        if result.error:
+            return
+
+        host = result.host
+        port = result.port
+
+        # Detectar indicadores de stack Java en cabeceras HTTP de respuesta
+        java_stack_detectado = False
+        server_identificado  = ""
+
+        try:
+            url = f"https://{host}:{port}/"
+            req = urllib.request.Request(url, method="HEAD")
+            req.add_header("User-Agent", f"VampSecureLabs-SSLAudit/{VERSION}")
+
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode    = ssl.CERT_NONE
+
+            with urllib.request.urlopen(req, timeout=self._timeout, context=ctx) as resp:
+                server_h    = resp.headers.get("Server",       "") or ""
+                powered_by  = resp.headers.get("X-Powered-By", "") or ""
+                combined    = f"{server_h} {powered_by}".lower()
+
+                # Servidores de aplicaciones Java habituales en entornos Log4j
+                indicadores_java = [
+                    "apache-coyote", "coyote", "tomcat", "jboss",
+                    "wildfly", "jetty", "undertow", "weblogic", "websphere",
+                ]
+                for indicador in indicadores_java:
+                    if indicador in combined:
+                        java_stack_detectado = True
+                        server_identificado  = server_h or powered_by
+                        break
+        except Exception:
+            return  # No se pueden obtener cabeceras; omitir sin hallazgo
+
+        if not java_stack_detectado:
+            return
+
+        # Verificar si el servidor TLS acepta conexión sin SNI
+        # (comportamiento permisivo que puede ser explotado via CVE-2026-34477)
+        tls_sin_sni = False
+        try:
+            ctx_nosni = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx_nosni.check_hostname = False
+            ctx_nosni.verify_mode    = ssl.CERT_NONE
+
+            with socket.create_connection((host, port), timeout=self._timeout) as sock:
+                # wrap_socket sin server_hostname omite SNI en el ClientHello
+                with ctx_nosni.wrap_socket(sock):
+                    tls_sin_sni = True
+        except Exception:
+            tls_sin_sni = False
+
+        if java_stack_detectado and tls_sin_sni:
+            result.findings.append(Finding(
+                severity="HIGH",
+                category="CVE / Log4j",
+                name="SSL-LOG4J-001: Posible CVE-2026-34477 — Log4j TLS bypass via JMSAppender",
+                detail=(
+                    f"Servidor identificado como stack Java ({server_identificado!r}) + TLS acepta "
+                    "conexión sin SNI. CVE-2026-34477 afecta a aplicaciones con Log4j ≤ 2.23.1 "
+                    "y JMSAppender activo: el canal JMS puede establecerse sin verificar el certificado "
+                    "del servidor (TLS bypass). Verificar versión de Log4j e inspeccionar la "
+                    "configuración de JMSAppender y del TLS del broker de mensajería."
+                ),
+                remediation=_REMED_LOG4J_TLS,
+            ))
+
+    # --------------------------------------------------------- Fase nueva: TLS session resumption
+
+    def _phase_session_resumption(self, result: AuditResult) -> None:
+        """
+        Detecta si el servidor usa TLS session tickets y verifica si se rotan
+        entre conexiones sucesivas. Tickets fijos debilitan la forward secrecy.
+
+        SSL-RESUME-001 (MEDIUM): session tickets activos sin rotación detectada
+        """
+        if result.error:
+            return
+
+        host   = result.host
+        port   = result.port
+        tickets: list[Optional[bytes]] = []
+
+        # Realizar dos conexiones TLS sucesivas y capturar los session tickets
+        for _ in range(2):
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode    = ssl.CERT_NONE
+
+                with socket.create_connection((host, port), timeout=self._timeout) as sock:
+                    with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                        sesion = ssock.session
+                        if sesion is not None and sesion.has_ticket:
+                            tickets.append(sesion.ticket)
+                        else:
+                            tickets.append(None)
+            except Exception:
+                return  # No se puede verificar; omitir sin hallazgo
+
+        if len(tickets) < 2:
+            return
+
+        ticket_a, ticket_b = tickets[0], tickets[1]
+
+        # Ambos tickets idénticos y no nulos → los tickets no se rotan entre sesiones
+        ticket_fijo = (
+            ticket_a is not None
+            and ticket_b is not None
+            and len(ticket_a) > 0
+            and ticket_a == ticket_b
+        )
+
+        if ticket_fijo:
+            result.findings.append(Finding(
+                severity="MEDIUM",
+                category="TLS / Session",
+                name="SSL-RESUME-001: TLS session tickets sin rotación detectados",
+                detail=(
+                    "El servidor emite TLS session tickets idénticos en conexiones sucesivas. "
+                    "Los session tickets sin rotación frecuente debilitan la forward secrecy: "
+                    "si la clave del ticket se compromete, un atacante puede descifrar sesiones "
+                    "TLS pasadas capturadas durante ese período."
+                ),
+                remediation=_REMED_SESSION_TICKETS,
+            ))
+        elif ticket_a is not None and len(ticket_a) > 0:
+            # Tickets activos pero distintos entre sesiones — rotación correcta, solo informativo
+            result.findings.append(Finding(
+                severity="INFO",
+                category="TLS / Session",
+                name="SSL-RESUME-001: TLS session tickets activos (rotación detectada)",
+                detail=(
+                    "El servidor emite TLS session tickets con rotación activa entre sesiones. "
+                    "La forward secrecy se mantiene adecuadamente si la rotación es frecuente "
+                    "(recomendado: cada hora como máximo)."
+                ),
+                remediation="",
+            ))
 
     # --------------------------------------------------------- Fase nueva: OCSP Stapling
 
