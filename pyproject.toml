@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vamp-ssl-audit"
-version = "1.2.0"
-description = "TLS/SSL security auditor — protocol version, cipher suites, certificate validity, HSTS preload"
+version = "1.4.0"
+description = "TLS/SSL security auditor — protocol version, cipher suites, certificate validity, HSTS preload, mTLS testing"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Security",
     "Topic :: Internet :: WWW/HTTP",
 ]
-dependencies = ["cryptography>=41.0.0", "rich>=13.7.0"]
+dependencies = ["cryptography>=41.0.0", "rich>=13.7.0", "dnspython>=2.4.0"]
 
 [project.scripts]
 vamp-ssl-audit = "vamp_ssl_audit:main"

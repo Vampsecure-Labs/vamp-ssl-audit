@@ -1,3 +1,4 @@
+<!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
 <h1 align="center">vamp-ssl-audit</h1>
 
 <p align="center">
@@ -29,6 +30,13 @@
 - `rich >= 13.7.0`
 
 ## Installation
+
+
+```bash
+pip install vamp-ssl-audit
+# o con Homebrew:
+brew install vampsecure-labs/labs/vamp-ssl-audit
+```
 
 ```bash
 git clone https://github.com/belky-me/vamp-ssl-audit.git
@@ -210,3 +218,6 @@ Use exclusively on systems you own or for which you hold explicit written author
 ---
 
 © VampSecure Studios — VampSecure Labs Security Research Division
+
+## Versión
+v1.3.0 — VampSecure Labs Security Research Division

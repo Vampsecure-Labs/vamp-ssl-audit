@@ -3,7 +3,7 @@
 vamp_ssl_audit.py — Auditor TLS/SSL con calificación SSLabs-style
 ===================================================================
 VampSecure Labs · VampSecure Studios
-Para Uso Exclusivo en Pruebas de Penetración Autorizadas — v2.0
+Para Uso Exclusivo en Pruebas de Penetración Autorizadas — v1.3.0
 
 DESCRIPCIÓN GENERAL
 -------------------
@@ -91,7 +91,15 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-VERSION   = "1.2.0"
+# dnspython — requerido para la comprobación DANE/TLSA
+try:
+    import dns.exception
+    import dns.resolver
+    _DNS_AVAILABLE = True
+except ImportError:
+    _DNS_AVAILABLE = False
+
+VERSION   = "1.4.0"
 TOOL_NAME = "vamp-ssl-audit"
 
 console = Console()
@@ -102,7 +110,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-ssl-audit v1.2.0 · TLS/SSL Professional Auditor
+  vamp-ssl-audit v1.4.0 · TLS/SSL Professional Auditor con mTLS Testing
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -572,6 +580,8 @@ class AuditResult:
     error:                 Optional[str] = None
     # Modo estricto TLS 1.3 (--strict-tls13)
     strict_tls13:          bool = False
+    # mTLS: True si el servidor requiere certificado cliente
+    mtls_required:         bool = False
 
     @property
     def max_severity(self) -> str:
@@ -605,10 +615,16 @@ class SSLAuditor:
         timeout: int = 10,
         warn_days: int = 90,
         strict_tls13: bool = False,
+        mtls_cert: Optional[str] = None,
+        mtls_key: Optional[str] = None,
     ) -> None:
-        self._timeout     = timeout
-        self._warn_days   = warn_days
+        self._timeout      = timeout
+        self._warn_days    = warn_days
         self._strict_tls13 = strict_tls13
+        # Ruta al certificado cliente PEM para testing mTLS
+        self._mtls_cert    = mtls_cert
+        # Ruta a la clave privada cliente PEM para testing mTLS
+        self._mtls_key     = mtls_key
 
     # ------------------------------------------------------------------ API pública
 
@@ -628,7 +644,10 @@ class SSLAuditor:
             self._phase_sc081v3(result)
             self._phase_log4j_tls_bypass(result)
             self._phase_session_resumption(result)
+            self._phase_mtls(result)
             self._phase_http_headers(result)
+            self._audit_dane(result.host, result.port, result.findings)
+            self._check_ct_logs(result.host, result.findings)
         except Exception as exc:
             result.error = str(exc)
         finally:
@@ -999,6 +1018,143 @@ class SSLAuditor:
             ))
 
         return info
+
+    # --------------------------------------------------------- Fase nueva: mTLS testing
+
+    def _phase_mtls(self, result: AuditResult) -> None:
+        """
+        Comprueba el comportamiento del servidor respecto a mTLS (autenticación mutua TLS).
+
+        Sin --mtls-cert/--mtls-key:
+          · Intenta conexión sin certificado cliente.
+          · Si recibe CERTIFICATE_REQUIRED → mTLS requerido (hallazgo informativo).
+          · Si acepta sin cert → hallazgo mTLS_NOT_ENFORCED (INFO).
+
+        Con --mtls-cert/--mtls-key:
+          · Conecta con el certificado cliente proporcionado.
+          · Informa si el servidor acepta o rechaza el certificado cliente.
+          · mTLS_CLIENT_CERT_ACCEPTED (INFO) si el handshake completa.
+          · mTLS_CLIENT_CERT_REJECTED (INFO) si el servidor rechaza el cert.
+
+        SSL-MTLS-001 (INFO): mTLS no requerido — el servidor acepta sin cert cliente
+        SSL-MTLS-002 (INFO): mTLS requerido — el servidor exige cert cliente
+        SSL-MTLS-003 (INFO): certificado cliente aceptado por el servidor
+        SSL-MTLS-004 (INFO): certificado cliente rechazado por el servidor
+        """
+        if result.error:
+            return
+
+        host = result.host
+        port = result.port
+
+        # Intentar conexión SIN certificado cliente para detectar si mTLS es obligatorio
+        ctx_sin_cert = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx_sin_cert.check_hostname = False
+        ctx_sin_cert.verify_mode    = ssl.CERT_NONE
+
+        sin_cert_ok    = False
+        error_ssl_sin  = ""
+
+        try:
+            with socket.create_connection((host, port), timeout=self._timeout) as sock:
+                with ctx_sin_cert.wrap_socket(sock, server_hostname=host):
+                    sin_cert_ok = True
+        except ssl.SSLError as exc:
+            error_ssl_sin = str(exc)
+            # CERTIFICATE_REQUIRED: el servidor rechazó el handshake por falta de cert cliente
+            msg_lower = error_ssl_sin.lower()
+            if (
+                "certificate_required" in msg_lower
+                or "alert certificate required" in msg_lower
+                or "certificate required" in msg_lower
+                or "1040" in error_ssl_sin  # SSL3_AL_FATAL + certificate_required alert code
+            ):
+                result.mtls_required = True
+        except OSError:
+            return  # Host no alcanzable — la fase principal ya lo habría detectado
+
+        if sin_cert_ok:
+            # El servidor acepta conexión sin certificado cliente
+            result.findings.append(Finding(
+                severity="INFO",
+                category="mTLS",
+                name="SSL-MTLS-001: mTLS_NOT_ENFORCED — servidor acepta conexión sin cert cliente",
+                detail=(
+                    "El servidor TLS no requiere autenticación mutua (mTLS): acepta conexiones "
+                    "sin presentar un certificado cliente. Para servicios de alta criticidad "
+                    "(APIs internas, microservicios, admin endpoints) considerar requerir "
+                    "certificado cliente mediante ClientAuth=require."
+                ),
+            ))
+        elif result.mtls_required:
+            result.findings.append(Finding(
+                severity="INFO",
+                category="mTLS",
+                name="SSL-MTLS-002: mTLS REQUERIDO — el servidor exige certificado cliente",
+                detail=(
+                    "El servidor requiere autenticación mutua TLS (mTLS): rechazó el handshake "
+                    f"con CERTIFICATE_REQUIRED ({error_ssl_sin[:80]}). "
+                    "Use --mtls-cert y --mtls-key para conectar con un certificado cliente válido."
+                ),
+            ))
+
+        # Si se proporcionó certificado cliente, intentar conexión con él
+        if not self._mtls_cert or not self._mtls_key:
+            return
+
+        try:
+            ctx_con_cert = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx_con_cert.check_hostname = False
+            ctx_con_cert.verify_mode    = ssl.CERT_NONE
+            ctx_con_cert.load_cert_chain(certfile=self._mtls_cert, keyfile=self._mtls_key)
+
+            with socket.create_connection((host, port), timeout=self._timeout) as sock:
+                with ctx_con_cert.wrap_socket(sock, server_hostname=host):
+                    result.findings.append(Finding(
+                        severity="INFO",
+                        category="mTLS",
+                        name="SSL-MTLS-003: mTLS_CLIENT_CERT_ACCEPTED — certificado cliente aceptado",
+                        detail=(
+                            f"El servidor aceptó el certificado cliente proporcionado "
+                            f"(cert: {self._mtls_cert}). La autenticación mutua TLS (mTLS) "
+                            "completó el handshake correctamente."
+                        ),
+                    ))
+        except ssl.SSLError as exc:
+            error_con = str(exc)
+            # Verificar si el error indica rechazo del certificado (vs. otros errores SSL)
+            msg_lower = error_con.lower()
+            if any(s in msg_lower for s in ("unknown ca", "bad certificate", "certificate unknown", "handshake failure")):
+                result.findings.append(Finding(
+                    severity="INFO",
+                    category="mTLS",
+                    name="SSL-MTLS-004: mTLS_CLIENT_CERT_REJECTED — certificado cliente rechazado",
+                    detail=(
+                        "El servidor rechazó el certificado cliente proporcionado. "
+                        f"Error TLS: {error_con[:120]}. "
+                        "El certificado debe estar firmado por la CA de confianza del servidor "
+                        "(consultar la política de ClientAuth configurada)."
+                    ),
+                ))
+            else:
+                result.findings.append(Finding(
+                    severity="INFO",
+                    category="mTLS",
+                    name="SSL-MTLS-004: mTLS error al presentar certificado cliente",
+                    detail=f"Error al intentar mTLS con certificado cliente: {error_con[:120]}",
+                ))
+        except (FileNotFoundError, ssl.SSLError) as exc:
+            result.findings.append(Finding(
+                severity="INFO",
+                category="mTLS",
+                name="SSL-MTLS-004: Error al cargar certificado/clave cliente",
+                detail=(
+                    f"No se pudo cargar el certificado ({self._mtls_cert}) o la clave "
+                    f"({self._mtls_key}): {str(exc)[:100]}. "
+                    "Verificar que los ficheros existen, tienen el formato PEM correcto "
+                    "y que la clave corresponde al certificado."
+                ),
+            ))
 
     # --------------------------------------------------------- Fase 4: cabeceras HTTP
 
@@ -1533,6 +1689,180 @@ class SSLAuditor:
                     "(CT puede tardar horas en indexarlo) o CA no cumple con CT."
                 ),
                 remediation=_REMED_CT_NO_LOG,
+            ))
+
+    # --------------------------------------------------------- Fase nueva: DANE/TLSA
+
+    def _audit_dane(self, domain: str, port: int, findings: list) -> None:
+        """
+        Valida el registro DANE/TLSA del dominio (RFC 6698).
+
+        Consulta el registro TLSA en _<port>._tcp.<domain>. DANE ancla el
+        certificado TLS a una entrada DNS firmada con DNSSEC, ofreciendo
+        verificación independiente de la jerarquía de CAs.
+
+        Parámetros
+        ----------
+        domain   : str  — Dominio a consultar
+        port     : int  — Puerto del servicio (443 para HTTPS)
+        findings : list — Lista donde añadir los hallazgos
+        """
+        if not _DNS_AVAILABLE:
+            # dnspython no disponible — omitir sin hallazgo
+            return
+
+        tlsa_name = f"_{port}._tcp.{domain}"
+        try:
+            answers = dns.resolver.resolve(tlsa_name, "TLSA")
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+            # Sin registro TLSA — hallazgo informativo
+            findings.append(Finding(
+                severity="INFO",
+                category="DANE/TLSA",
+                name="DANE/TLSA no configurado",
+                detail=(
+                    f"No se encontró registro TLSA en {tlsa_name}. "
+                    "Sin DANE no existe anclaje de certificado por DNS: la validación "
+                    "del certificado depende exclusivamente de la jerarquía de CAs."
+                ),
+            ))
+            return
+        except dns.exception.DNSException:
+            # Error de resolución DNS inesperado — omitir sin hallazgo
+            findings.append(Finding(
+                severity="INFO",
+                category="DANE/TLSA",
+                name="DANE/TLSA no configurado",
+                detail=(
+                    f"No se pudo resolver el registro TLSA en {tlsa_name}. "
+                    "Sin DANE no existe anclaje de certificado por DNS."
+                ),
+            ))
+            return
+        except Exception:
+            return
+
+        # Registro TLSA encontrado — intentar parsearlo
+        for rdata in answers:
+            try:
+                usage    = rdata.usage
+                selector = rdata.selector
+                mtype    = rdata.mtype
+            except AttributeError:
+                # El objeto rdata no tiene los atributos esperados
+                findings.append(Finding(
+                    severity="MEDIUM",
+                    category="DANE/TLSA",
+                    name="Registro TLSA malformado",
+                    detail=(
+                        f"Registro TLSA encontrado en {tlsa_name} pero no se puede "
+                        "parsear correctamente. Formato esperado: "
+                        "usage selector matching-type certificate-data."
+                    ),
+                ))
+                return
+
+            # Usage 3 (DANE-EE) con selector 1 (SPKI) es la configuración óptima
+            if usage == 3 and selector == 1:
+                findings.append(Finding(
+                    severity="INFO",
+                    category="DANE/TLSA",
+                    name="DANE/TLSA configurado correctamente",
+                    detail=(
+                        f"Registro TLSA encontrado en {tlsa_name}: "
+                        f"usage={usage} (DANE-EE), selector={selector} (SPKI), "
+                        f"matching-type={mtype}. Configuración DANE óptima para "
+                        "anclaje de clave pública sin dependencia de CA."
+                    ),
+                ))
+            else:
+                findings.append(Finding(
+                    severity="INFO",
+                    category="DANE/TLSA",
+                    name="DANE/TLSA configurado",
+                    detail=(
+                        f"Registro TLSA encontrado en {tlsa_name}: "
+                        f"usage={usage}, selector={selector}, matching-type={mtype}. "
+                        "Anclaje de certificado DNS activo."
+                    ),
+                ))
+            return  # Un solo hallazgo por dominio/puerto
+
+    # --------------------------------------------------------- Fase nueva: CT logs — resumen de dominio
+
+    def _check_ct_logs(self, domain: str, findings: list) -> None:
+        """
+        Consulta crt.sh para obtener el recuento de certificados emitidos
+        para el dominio y el más reciente.
+
+        A diferencia de _phase_ct_logs (que verifica el serial del certificado
+        activo), este método proporciona una vista general de la emisión
+        histórica del dominio en los Certificate Transparency logs.
+
+        Parámetros
+        ----------
+        domain   : str  — Dominio a consultar en crt.sh
+        findings : list — Lista donde añadir los hallazgos
+        """
+        url = f"https://crt.sh/?q={domain}&output=json"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": f"{TOOL_NAME}/{VERSION}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                datos = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception:
+            # crt.sh no disponible, timeout u otro error — hallazgo informativo
+            findings.append(Finding(
+                severity="INFO",
+                category="CT Logs",
+                name="CT check omitido (no disponible)",
+                detail=(
+                    f"No se pudo consultar crt.sh para el dominio {domain}. "
+                    "La verificación de Certificate Transparency logs no está disponible."
+                ),
+            ))
+            return
+
+        total = len(datos) if isinstance(datos, list) else 0
+
+        if total > 0:
+            # Obtener la fecha not_before del certificado más reciente
+            mas_reciente = ""
+            try:
+                # Los registros de crt.sh tienen el campo not_before como cadena
+                fechas = [
+                    str(e.get("not_before", ""))
+                    for e in datos
+                    if e.get("not_before")
+                ]
+                if fechas:
+                    mas_reciente = max(fechas)
+            except Exception:
+                pass
+
+            detalle = (
+                f"Se encontraron {total} certificado(s) en CT logs para '{domain}'."
+            )
+            if mas_reciente:
+                detalle += f" Más reciente emitido: {mas_reciente}."
+
+            findings.append(Finding(
+                severity="INFO",
+                category="CT Logs",
+                name=f"CT logs: {total} certificado(s) registrados",
+                detail=detalle,
+            ))
+        else:
+            findings.append(Finding(
+                severity="INFO",
+                category="CT Logs",
+                name="CT check omitido (no disponible)",
+                detail=(
+                    f"crt.sh no devolvió certificados para '{domain}'. "
+                    "Puede deberse a un dominio privado o a que crt.sh no tiene datos aún."
+                ),
             ))
 
 
@@ -2148,6 +2478,22 @@ def _parse_args() -> argparse.Namespace:
                    help="Modo estricto TLS 1.3: si el servidor soporta TLS 1.2 o inferior, "
                         "la nota máxima es B. Útil para entornos que exigen TLS 1.3 exclusivo.")
 
+    # Opciones de autenticación mutua TLS (mTLS)
+    mtls_group = p.add_argument_group(
+        "mTLS testing",
+        "Prueba de autenticación mutua TLS. Sin --mtls-cert/--mtls-key detecta si el "
+        "servidor REQUIERE certificado cliente. Con ambas opciones, conecta usando el "
+        "certificado proporcionado e informa si es aceptado o rechazado.",
+    )
+    mtls_group.add_argument(
+        "--mtls-cert", metavar="CERT.pem",
+        help="Ruta al certificado cliente PEM para la prueba de mTLS.",
+    )
+    mtls_group.add_argument(
+        "--mtls-key", metavar="KEY.pem",
+        help="Ruta a la clave privada PEM del certificado cliente (par de --mtls-cert).",
+    )
+
     # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
     # --report-scope, --report-html, --report-pdf)
     from vampsec_report import add_report_args
@@ -2253,6 +2599,8 @@ def main() -> None:
         timeout=args.timeout,
         warn_days=args.warn_days,
         strict_tls13=getattr(args, "strict_tls13", False),
+        mtls_cert=getattr(args, "mtls_cert", None),
+        mtls_key=getattr(args, "mtls_key", None),
     )
     reporter = Reporter(console)
 
