@@ -5,26 +5,19 @@ Cubre: compute_grade, _apply_cap, caps por protocolo, caps por cifrado,
        detección de cert auto-firmado, HSTS, hallazgos con grade_cap.
 """
 
-import sys
 import os
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
-
-import pytest
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from vamp_ssl_audit import (
-    AuditResult,
-    CertInfo,
-    Finding,
+    CIPHER_GRADE_CAP,
     GRADE_ORDER_LIST,
     PROTOCOL_GRADE_CAP,
-    CIPHER_GRADE_CAP,
-    compute_grade,
+    Finding,
     _apply_cap,
+    compute_grade,
 )
-
 
 # ---------------------------------------------------------------------------
 # Tests de _apply_cap

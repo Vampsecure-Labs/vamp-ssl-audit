@@ -4,10 +4,9 @@ Fixtures compartidos para los tests de vamp-ssl-audit.
 Proporciona objetos de prueba reutilizables: AuditResult, CertInfo, Finding.
 """
 
-import sys
 import os
+import sys
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,11 +17,7 @@ from vamp_ssl_audit import (
     AuditResult,
     CertInfo,
     Finding,
-    GRADE_ORDER_LIST,
-    compute_grade,
-    _apply_cap,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures de objetos de datos

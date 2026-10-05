@@ -80,7 +80,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
-from typing import Optional
 
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
@@ -235,7 +234,7 @@ def _apply_cap(current: str, cap: str) -> str:
     return GRADE_ORDER_LIST[max(ci, ca)]
 
 
-def compute_grade(result: "AuditResult") -> str:
+def compute_grade(result: AuditResult) -> str:
     """
     Calcula la calificación SSLabs-style del resultado de la auditoría.
 
@@ -542,8 +541,8 @@ class CertInfo:
     """Detalles extraídos del certificado X.509."""
     subject:        str = ""
     issuer:         str = ""
-    not_before:     Optional[datetime] = None
-    not_after:      Optional[datetime] = None
+    not_before:     datetime | None = None
+    not_after:      datetime | None = None
     days_remaining: int = 0
     serial:         str = ""
     key_type:       str = ""
@@ -567,17 +566,17 @@ class AuditResult:
     supported_protocols:   list[str] = field(default_factory=list)
     unsupported_protocols: list[str] = field(default_factory=list)
     # Certificado
-    cert:                  Optional[CertInfo] = None
+    cert:                  CertInfo | None = None
     # Cabeceras HTTP
-    hsts_header:           Optional[str] = None
-    x_frame_options:       Optional[str] = None
-    x_content_type:        Optional[str] = None
+    hsts_header:           str | None = None
+    x_frame_options:       str | None = None
+    x_content_type:        str | None = None
     # Hallazgos consolidados
     findings:              list[Finding] = field(default_factory=list)
     # Calificación SSLabs-style (calculada al finalizar la auditoría)
     grade:                 str = ""
     # Error fatal (host no alcanzable, etc.)
-    error:                 Optional[str] = None
+    error:                 str | None = None
     # Modo estricto TLS 1.3 (--strict-tls13)
     strict_tls13:          bool = False
     # mTLS: True si el servidor requiere certificado cliente
@@ -615,8 +614,8 @@ class SSLAuditor:
         timeout: int = 10,
         warn_days: int = 90,
         strict_tls13: bool = False,
-        mtls_cert: Optional[str] = None,
-        mtls_key: Optional[str] = None,
+        mtls_cert: str | None = None,
+        mtls_key: str | None = None,
     ) -> None:
         self._timeout      = timeout
         self._warn_days    = warn_days
@@ -663,7 +662,7 @@ class SSLAuditor:
         ctx.check_hostname = True
         ctx.verify_mode    = ssl.CERT_REQUIRED
 
-        der_cert:    Optional[bytes] = None
+        der_cert:    bytes | None = None
         proto_version: str = ""
         cipher_name:   str = ""
         hostname_ok:   bool = True
@@ -1448,7 +1447,7 @@ class SSLAuditor:
 
         host   = result.host
         port   = result.port
-        tickets: list[Optional[bytes]] = []
+        tickets: list[bytes | None] = []
 
         # Realizar dos conexiones TLS sucesivas y capturar los session tickets
         for _ in range(2):
@@ -1533,7 +1532,7 @@ class SSLAuditor:
             return  # No se puede obtener el cert; la fase principal ya lo gestionó
 
         # Comprobar URL OCSP en la extensión Authority Information Access (AIA)
-        ocsp_url: Optional[str] = None
+        ocsp_url: str | None = None
         try:
             aia = cert_obj.extensions.get_extension_for_oid(
                 ExtensionOID.AUTHORITY_INFORMATION_ACCESS
@@ -1915,7 +1914,7 @@ class Reporter:
         if result.cert:
             c = result.cert
             exp_color = "red" if c.days_remaining < 30 else ("yellow" if c.days_remaining < 90 else "green")
-            self._c.print(f"\n  [bold]Certificado[/]")
+            self._c.print("\n  [bold]Certificado[/]")
             self._c.print(f"    Sujeto:        {c.subject}")
             self._c.print(f"    Emisor:        {c.issuer}")
             self._c.print(f"    Clave:         {c.key_type} {c.key_bits} bits")
@@ -1937,7 +1936,7 @@ class Reporter:
         if result.hsts_header:
             self._c.print(f"\n  [bold]HSTS:[/] [green]{result.hsts_header}[/]")
         else:
-            self._c.print(f"\n  [bold]HSTS:[/] [red]AUSENTE[/]")
+            self._c.print("\n  [bold]HSTS:[/] [red]AUSENTE[/]")
 
         # Tabla de hallazgos con remediación
         if result.findings:
@@ -1960,7 +1959,7 @@ class Reporter:
             # Mostrar remediaciones sólo para hallazgos CRITICAL y HIGH
             criticos = [f for f in result.findings if f.severity in ("CRITICAL", "HIGH") and f.remediation]
             if criticos:
-                self._c.print(f"\n  [bold cyan]Pasos de remediación prioritarios:[/]")
+                self._c.print("\n  [bold cyan]Pasos de remediación prioritarios:[/]")
                 for f in criticos:
                     self._c.print(
                         Panel(
@@ -2019,7 +2018,7 @@ class Reporter:
 
     def to_json(self, results: list[AuditResult]) -> str:
         """Serializa los resultados en JSON incluyendo nota y remediaciones."""
-        def _cert_dict(c: Optional[CertInfo]) -> Optional[dict]:
+        def _cert_dict(c: CertInfo | None) -> dict | None:
             if c is None:
                 return None
             return {

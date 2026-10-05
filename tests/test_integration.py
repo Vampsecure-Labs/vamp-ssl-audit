@@ -8,22 +8,14 @@ Si el entorno tiene Docker disponible se puede descomentar el test con
 nginx + certificado auto-firmado (marcado con pytest.mark.docker).
 """
 
-import ssl
-import socket
-import threading
-import tempfile
 import os
-import sys
 import subprocess
+import sys
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from vamp_ssl_audit import AuditResult, CertInfo, Finding, compute_grade, _apply_cap
-
+from vamp_ssl_audit import AuditResult, CertInfo, Finding, _apply_cap, compute_grade
 
 # ---------------------------------------------------------------------------
 # Helpers: servidor TLS mínimo en localhost para tests de integración
