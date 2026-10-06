@@ -244,7 +244,7 @@ class TestDaemonMode:
 
     def test_version_es_150(self):
         from vamp_ssl_audit import VERSION
-        assert VERSION == "1.5.0"
+        assert VERSION == "1.6.0"
 
     def test_argparser_acepta_watch(self):
         """El parser acepta --watch como entero."""
@@ -277,3 +277,66 @@ class TestDaemonMode:
         """_daemon_loop es callable."""
         from vamp_ssl_audit import _daemon_loop
         assert callable(_daemon_loop)
+
+
+class TestDeltaScan:
+    """Tests para --delta FILE (delta scan, v1.6.0)."""
+
+    def _make_result(self, host: str, port: int, findings: list) -> object:
+        from vamp_ssl_audit import AuditResult
+        r = AuditResult(host=host, port=port, timestamp="2026-10-06T00:00:00Z")
+        r.findings = findings
+        return r
+
+    def _make_finding(self, category: str, name: str) -> object:
+        from vamp_ssl_audit import Finding
+        return Finding(severity="HIGH", category=category, name=name, detail="test")
+
+    def test_apply_delta_scan_marca_new_y_recurring(self, tmp_path):
+        import json
+        from vamp_ssl_audit import apply_delta_scan
+        baseline = {
+            "results": [{"host": "h1", "port": 443, "findings": [
+                {"category": "Protocol", "name": "TLS 1.0", "severity": "HIGH", "detail": "x", "grade_cap": "", "remediation": ""},
+            ]}]
+        }
+        bp = tmp_path / "baseline.json"
+        bp.write_text(json.dumps(baseline))
+        f_rec = self._make_finding("Protocol", "TLS 1.0")
+        f_new = self._make_finding("Certificate", "Self-signed")
+        r = self._make_result("h1", 443, [f_rec, f_new])
+        results, resolved = apply_delta_scan([r], str(bp))
+        assert f_rec.delta_state == "recurring"
+        assert f_new.delta_state == "new"
+
+    def test_apply_delta_scan_detecta_resolved(self, tmp_path):
+        import json
+        from vamp_ssl_audit import apply_delta_scan
+        baseline = {
+            "results": [{"host": "h1", "port": 443, "findings": [
+                {"category": "Protocol", "name": "TLS 1.0", "severity": "HIGH", "detail": "x", "grade_cap": "", "remediation": ""},
+                {"category": "Protocol", "name": "SSL 3.0", "severity": "CRITICAL", "detail": "x", "grade_cap": "", "remediation": ""},
+            ]}]
+        }
+        bp = tmp_path / "baseline.json"
+        bp.write_text(json.dumps(baseline))
+        f_rec = self._make_finding("Protocol", "TLS 1.0")
+        r = self._make_result("h1", 443, [f_rec])
+        results, resolved = apply_delta_scan([r], str(bp))
+        assert len(resolved) == 1
+        assert "SSL 3.0" in resolved[0]
+
+    def test_argparser_acepta_delta(self):
+        import sys
+        from vamp_ssl_audit import _parse_args
+        old_argv = sys.argv
+        sys.argv = ["vamp-ssl-audit", "-H", "example.com", "--delta", "prev.json"]
+        try:
+            args = _parse_args()
+            assert args.delta == "prev.json"
+        finally:
+            sys.argv = old_argv
+
+    def test_version_es_160(self):
+        from vamp_ssl_audit import VERSION
+        assert VERSION == "1.6.0"

@@ -99,7 +99,7 @@ try:
 except ImportError:
     _DNS_AVAILABLE = False
 
-VERSION   = "1.5.0"
+VERSION   = "1.6.0"
 TOOL_NAME = "vamp-ssl-audit"
 
 console = Console()
@@ -531,6 +531,7 @@ class Finding:
     detail:      str
     remediation: str = ""   # Texto de remediación con pasos concretos
     grade_cap:   str = ""   # Cap de nota SSLabs que aplica este hallazgo
+    delta_state: str = ""   # "new" | "recurring" cuando se usa --delta
 
     @property
     def order(self) -> int:
@@ -2498,6 +2499,11 @@ def _parse_args() -> argparse.Namespace:
         "--watch", type=int, metavar="SECONDS",
         help="Daemon mode: re-auditar cada N segundos, mostrar solo hallazgos NEW/RESOLVED",
     )
+    p.add_argument(
+        "--delta", metavar="FILE",
+        help="Delta scan: comparar con un informe JSON previo (--json). "
+             "Muestra hallazgos como NEW/RECURRING y lista los RESOLVED.",
+    )
 
     # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
     # --report-scope, --report-html, --report-pdf)
@@ -2595,6 +2601,35 @@ def _resolve_targets(args: argparse.Namespace) -> list[tuple[str, int]]:
 
 
 # ─── Daemon mode ──────────────────────────────────────────────────────────────
+
+def apply_delta_scan(
+    results: "list[AuditResult]", delta_path: str
+) -> "tuple[list[AuditResult], list[str]]":
+    """
+    Compara resultados actuales con un informe JSON previo (--delta FILE).
+    Marca cada hallazgo como 'new' o 'recurring'.
+    Clave única: host:port:category:name.
+    Devuelve (results_marcados, resolved_keys).
+    """
+    import json as _json
+    try:
+        baseline_data = _json.loads(Path(delta_path).read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as exc:
+        raise ValueError(f"No se puede leer el delta baseline '{delta_path}': {exc}") from exc
+    baseline_keys: set = set()
+    for br in baseline_data.get("results", []):
+        h, p = br.get("host", ""), br.get("port", 0)
+        for bf in br.get("findings", []):
+            baseline_keys.add(f"{h}:{p}:{bf.get('category','')}:{bf.get('name','')}")
+    current_keys: set = set()
+    for r in results:
+        for f in r.findings:
+            k = f"{r.host}:{r.port}:{f.category}:{f.name}"
+            f.delta_state = "recurring" if k in baseline_keys else "new"
+            current_keys.add(k)
+    resolved = sorted(baseline_keys - current_keys)
+    return results, resolved
+
 
 def _daemon_loop(args, interval: int) -> None:
     """Re-audit every `interval` seconds; print only NEW / RESOLVED findings."""
@@ -2695,10 +2730,30 @@ def main() -> None:
 
     results.sort(key=lambda r: (r.host, r.port))
 
+    # ── Delta scan (--delta) ─────────────────────────────────────────────────
+    delta_resolved: list[str] = []
+    if getattr(args, "delta", None):
+        try:
+            results, delta_resolved = apply_delta_scan(results, args.delta)
+            n_new = sum(1 for r in results for f in r.findings if f.delta_state == "new")
+            n_rec = sum(1 for r in results for f in r.findings if f.delta_state == "recurring")
+            console.print(
+                f"[bold cyan]  DELTA vs {args.delta}:[/] "
+                f"[bold green]{n_new} NEW[/] · [yellow]{n_rec} RECURRING[/] · "
+                f"[dim]{len(delta_resolved)} RESOLVED[/]\n"
+            )
+        except ValueError as exc:
+            console.print(f"[bold red]  [!] Delta error: {exc}[/]")
+
     for r in results:
         reporter.print_result(r)
 
     reporter.print_summary(results)
+
+    if delta_resolved:
+        console.print("\n[bold green]  ✅ RESUELTOS desde el baseline:[/]")
+        for k in delta_resolved:
+            console.print(f"[dim]    [-RESOLVED] {k}[/]")
 
     # Exportar ficheros solicitados
     if args.json:
