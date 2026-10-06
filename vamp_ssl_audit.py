@@ -73,6 +73,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import warnings
@@ -98,7 +99,7 @@ try:
 except ImportError:
     _DNS_AVAILABLE = False
 
-VERSION   = "1.4.0"
+VERSION   = "1.5.0"
 TOOL_NAME = "vamp-ssl-audit"
 
 console = Console()
@@ -2493,6 +2494,11 @@ def _parse_args() -> argparse.Namespace:
         help="Ruta a la clave privada PEM del certificado cliente (par de --mtls-cert).",
     )
 
+    p.add_argument(
+        "--watch", type=int, metavar="SECONDS",
+        help="Daemon mode: re-auditar cada N segundos, mostrar solo hallazgos NEW/RESOLVED",
+    )
+
     # Argumentos de informe unificado VSL (--client, --engagement, --auditor,
     # --report-scope, --report-html, --report-pdf)
     from vampsec_report import add_report_args
@@ -2588,11 +2594,80 @@ def _resolve_targets(args: argparse.Namespace) -> list[tuple[str, int]]:
     return targets
 
 
+# ─── Daemon mode ──────────────────────────────────────────────────────────────
+
+def _daemon_loop(args, interval: int) -> None:
+    """Re-audit every `interval` seconds; print only NEW / RESOLVED findings."""
+    import signal
+
+    prev_keys: set = set()
+    iteration = 0
+
+    def _stop(sig, frame):
+        print("\n[!] Daemon detenido.", file=sys.stderr)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+
+    targets = _resolve_targets(args)
+    target_str = ", ".join(f"{h}:{p}" for h, p in targets)
+    auditor = SSLAuditor(
+        timeout=args.timeout,
+        warn_days=args.warn_days,
+        strict_tls13=getattr(args, "strict_tls13", False),
+        mtls_cert=getattr(args, "mtls_cert", None),
+        mtls_key=getattr(args, "mtls_key", None),
+    )
+
+    print(
+        f"[*] Daemon mode — {target_str} — cada {interval}s — Ctrl+C para detener",
+        file=sys.stderr,
+    )
+
+    while True:
+        iteration += 1
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"\n── [{ts}] iter #{iteration} ──", file=sys.stderr)
+
+        current_keys: set = set()
+        try:
+            for host, port in targets:
+                result = auditor.audit(host, port)
+                for f in result.findings:
+                    current_keys.add(f"{host}:{port}:{f.category}:{f.name}")
+        except Exception as exc:
+            print(f"  [!] Error en auditoría: {exc}", file=sys.stderr)
+            time.sleep(interval)
+            continue
+
+        new_keys = current_keys - prev_keys
+        resolved_keys = prev_keys - current_keys
+
+        if not new_keys and not resolved_keys:
+            print("[=] Sin cambios", file=sys.stderr)
+        else:
+            for k in sorted(new_keys):
+                parts = k.split(":", 3)
+                sev_tag = ""
+                print(f"  [+NEW     ] {k}", file=sys.stderr)
+            for k in sorted(resolved_keys):
+                print(f"  [-RESOLVED] {k}", file=sys.stderr)
+
+        prev_keys = current_keys
+        time.sleep(interval)
+
+
 def main() -> None:
     """Punto de entrada principal."""
     console.print(BANNER, style="bold magenta")
 
     args     = _parse_args()
+
+    if getattr(args, "watch", None) is not None:
+        _daemon_loop(args, args.watch)
+        return
+
     targets  = _resolve_targets(args)
     auditor  = SSLAuditor(
         timeout=args.timeout,

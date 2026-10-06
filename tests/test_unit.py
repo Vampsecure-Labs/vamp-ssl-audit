@@ -233,3 +233,47 @@ class TestFinding:
     def test_finding_medio_tiene_cap_b(self, finding_medio):
         assert finding_medio.grade_cap == "B"
         assert finding_medio.severity == "MEDIUM"
+
+
+# ---------------------------------------------------------------------------
+# Tests de daemon mode (--watch) — v1.5.0
+# ---------------------------------------------------------------------------
+
+class TestDaemonMode:
+    """Tests del modo daemon (--watch) en vamp-ssl-audit."""
+
+    def test_version_es_150(self):
+        from vamp_ssl_audit import VERSION
+        assert VERSION == "1.5.0"
+
+    def test_argparser_acepta_watch(self):
+        """El parser acepta --watch como entero."""
+        import argparse
+        import sys
+        from vamp_ssl_audit import _parse_args
+
+        old_argv = sys.argv
+        sys.argv = ["vamp-ssl-audit", "-H", "example.com", "--watch", "60"]
+        try:
+            args = _parse_args()
+            assert args.watch == 60
+        finally:
+            sys.argv = old_argv
+
+    def test_argparser_watch_none_por_defecto(self):
+        """Sin --watch, args.watch es None."""
+        import sys
+        from vamp_ssl_audit import _parse_args
+
+        old_argv = sys.argv
+        sys.argv = ["vamp-ssl-audit", "-H", "example.com"]
+        try:
+            args = _parse_args()
+            assert args.watch is None
+        finally:
+            sys.argv = old_argv
+
+    def test_daemon_loop_importable(self):
+        """_daemon_loop es callable."""
+        from vamp_ssl_audit import _daemon_loop
+        assert callable(_daemon_loop)
