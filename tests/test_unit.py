@@ -244,7 +244,7 @@ class TestDaemonMode:
 
     def test_version_es_150(self):
         from vamp_ssl_audit import VERSION
-        assert VERSION == "1.6.0"
+        assert VERSION == "1.7.0"
 
     def test_argparser_acepta_watch(self):
         """El parser acepta --watch como entero."""
@@ -339,4 +339,4 @@ class TestDeltaScan:
 
     def test_version_es_160(self):
         from vamp_ssl_audit import VERSION
-        assert VERSION == "1.6.0"
+        assert VERSION == "1.7.0"

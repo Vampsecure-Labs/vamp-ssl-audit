@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vamp-ssl-audit"
-version = "1.6.0"
-description = "TLS/SSL security auditor — protocol version, cipher suites, certificate validity, HSTS preload, mTLS testing, daemon watch mode, delta scan"
+version = "1.7.0"
+description = "TLS/SSL security auditor — protocol version, cipher suites, certificate validity, HSTS preload, mTLS testing, daemon watch mode, delta scan · librería importable"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.8"
@@ -31,4 +31,5 @@ Homepage = "https://github.com/Vampsecure-Labs/vamp-ssl-audit"
 Repository = "https://github.com/Vampsecure-Labs/vamp-ssl-audit"
 
 [tool.setuptools]
-py-modules = ["vamp_ssl_audit", "vampsec_report"]
+packages = ["vamp_ssl_audit"]
+py-modules = ["vampsec_report"]
