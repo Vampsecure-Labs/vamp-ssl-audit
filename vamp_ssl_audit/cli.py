@@ -20,13 +20,11 @@ from ._models import (
     VERSION,
     TOOL_NAME,
     AuditResult,
-    Finding,
     SEVERITY_ORDER,
-    GRADE_ORDER_LIST,
     GRADE_COLOR,
     GRADE_DESCRIPTION,
 )
-from ._core import SSLAuditor, _apply_cap, compute_grade, apply_delta_scan
+from ._core import SSLAuditor, apply_delta_scan
 from ._report import to_json, to_html, to_markdown, to_csv, _findings_vsl
 
 console = Console()

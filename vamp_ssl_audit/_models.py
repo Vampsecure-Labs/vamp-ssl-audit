@@ -6,7 +6,7 @@ _models.py — Constantes, estructuras de datos y remediaciones de vamp-ssl-audi
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 
 VERSION   = "1.7.0"
 TOOL_NAME = "vamp-ssl-audit"

@@ -248,7 +248,6 @@ class TestDaemonMode:
 
     def test_argparser_acepta_watch(self):
         """El parser acepta --watch como entero."""
-        import argparse
         import sys
         from vamp_ssl_audit import _parse_args
 
