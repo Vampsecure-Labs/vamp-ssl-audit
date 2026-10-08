@@ -205,6 +205,85 @@ jobs:
 | `1` | High-severity findings detected | Pipeline fails — review required |
 | `2` | Critical-severity findings detected | Pipeline fails — immediate action required |
 
+## Sample Output
+
+```
+$ python3 vamp_ssl_audit.py -H expired.badssl.com -H self-signed.badssl.com -H badssl.com
+vamp-ssl-audit v1.3.0 — TLS/SSL Professional Auditor · VampSecure Labs
+──────────────────────────────────────────────────────────────────────
+Auditing 3 hosts with 3 workers...
+
+┌────────────────────────┬───────┬────────┬────────────────────────────────────┐
+│ Host                   │ Grade │ Proto  │ Top Finding                        │
+├────────────────────────┼───────┼────────┼────────────────────────────────────┤
+│ expired.badssl.com     │  F    │ TLS1.2 │ [CRITICAL] Certificate expired     │
+│ self-signed.badssl.com │  T    │ TLS1.2 │ [HIGH] Self-signed certificate     │
+│ badssl.com             │  A    │ TLS1.3 │ No critical issues                 │
+└────────────────────────┴───────┴────────┴────────────────────────────────────┘
+
+── expired.badssl.com ──────────────────────────────────────────────────────
+  [CRITICAL] Certificate expired 2015-04-09 (3829 days ago)
+             Remediation: renew certificate immediately (e.g. certbot renew)
+  Grade cap: F
+
+── self-signed.badssl.com ──────────────────────────────────────────────────
+  [HIGH] Self-signed certificate — not trusted by any public CA
+         Remediation: replace with a certificate issued by a trusted CA
+  Grade cap: T
+
+── badssl.com ──────────────────────────────────────────────────────────────
+  [INFO] TLS 1.3 supported                       ✓
+  [INFO] HSTS present (max-age=31536000)          ✓
+  [INFO] Certificate valid for 87 days            ✓
+  Grade: A
+
+3 hosts audited in 2.4s · 2 findings (1 CRITICAL, 1 HIGH)
+Exit code: 2
+```
+
+## Why vamp-ssl-audit vs. testssl.sh · SSL Labs API · nmap ssl-enum-ciphers
+
+| Capability | vamp-ssl-audit | testssl.sh | SSL Labs API | nmap ssl-enum-ciphers |
+|------------|----------------|------------|--------------|----------------------|
+| A+–F grading (SSLabs-style) | ✅ | ✅ | ✅ (authoritative) | ❌ |
+| Runs fully local / offline | ✅ | ✅ | ❌ Cloud only | ✅ |
+| Multi-host concurrent scan | ✅ `--workers N` | ❌ Sequential | ❌ | ❌ |
+| HSTS / DANE / CT log checks | ✅ | ✅ | ✅ | ❌ |
+| mTLS / client cert validation | ✅ | ✅ | ❌ | ❌ |
+| OCSP stapling check | ✅ | ✅ | ✅ | ❌ |
+| `--watch N` daemon mode | ✅ | ❌ | ❌ | ❌ |
+| `--delta FILE` regression tracking | ✅ | ❌ | ❌ | ❌ |
+| JSON + HTML + Markdown + CSV export | ✅ | ✅ JSON | ✅ JSON | ❌ |
+| VSL engagement report (HTML / PDF) | ✅ `vampsec_report` | ❌ | ❌ | ❌ |
+| CI/CD exit codes (0 / 1 / 2) | ✅ | ✅ | ❌ | ❌ |
+| Python importable package | ✅ | ❌ Bash | ❌ | ❌ |
+
+- **Concurrent scanning** — `--workers 10` audits a 50-host TLS inventory in under a minute; testssl.sh runs sequentially and SSL Labs throttles at ~3 requests/min per IP.
+- **Continuous monitoring** — `--watch N` combined with `--delta FILE` surfaces only newly degraded hosts on each run, turning a one-shot tool into a change-alert system.
+- **CI/CD native** — exit codes 0/1/2 gate pipelines directly; the bundled GitHub Actions snippet is ready to copy into `.github/workflows/`.
+- **Self-hosted** — SSL Labs requires an internet-reachable target and may queue requests; `vamp-ssl-audit` runs on air-gapped networks and internal lab environments without sending host data to a third party.
+
+## Check Coverage
+
+| Check | Standard | Grade cap |
+|-------|----------|-----------|
+| SSLv3 accepted | NIST SP 800-52r2 §3.3.1 | C |
+| TLS 1.0 / TLS 1.1 present | RFC 8996 / NIST SP 800-52r2 | B |
+| NULL / EXPORT / ADH / AECDH cipher suites | NIST SP 800-52r2 §3.3.3 | F |
+| RC4 / DES / 3DES cipher suites | CIS Control 3.10 / RFC 7465 | C–B |
+| Certificate expiry (default 90-day warning) | CIS Control 3.10 | F (expired) / MEDIUM |
+| RSA key < 1024 bits | NIST SP 800-131Ar2 | F |
+| RSA key < 2048 bits | NIST SP 800-131Ar2 | B |
+| EC key < 224 bits | NIST SP 800-186 | B |
+| SHA-1 / MD5 signature algorithm | NIST SP 800-131Ar2 | B–C |
+| Self-signed certificate | CIS Control 3.10 | T |
+| Hostname mismatch (SAN / CN coverage) | RFC 6125 | T |
+| HSTS absence or short max-age | OWASP HSTS / RFC 6797 | A– |
+| OCSP stapling | RFC 6960 | INFO |
+| DANE / TLSA record | RFC 6698 | INFO |
+| Certificate Transparency log presence | RFC 9162 | INFO |
+| mTLS mutual authentication | NIST SP 800-52r2 §3.2 | INFO |
+
 ## Legal Notice
 
 Use exclusively on systems you own or for which you hold explicit written authorization from the system owner. VampSecure Studios assumes no liability for unauthorized use.
