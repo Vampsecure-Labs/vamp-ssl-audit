@@ -40,7 +40,7 @@ brew install vampsecure-labs/labs/vamp-ssl-audit
 ```
 
 ```bash
-git clone https://github.com/belky-me/vamp-ssl-audit.git
+git clone https://github.com/Vampsecure-Labs/vamp-ssl-audit.git
 cd vamp-ssl-audit
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -213,12 +213,24 @@ Use exclusively on systems you own or for which you hold explicit written author
 
 `vamp-ssl-audit` is one tool in the VampSecure Labs security research toolkit. For the full toolkit including the orchestrator that runs all tools in sequence and aggregates findings into a single engagement report, see:
 
-- Portfolio: [github.com/belky-me](https://github.com/belky-me)
-- Orchestrator: [github.com/belky-me/vamp-orchestrator](https://github.com/belky-me/vamp-orchestrator)
+- Portfolio: [github.com/Vampsecure-Labs](https://github.com/Vampsecure-Labs)
+- Orchestrator: [github.com/Vampsecure-Labs/vamp-orchestrator](https://github.com/Vampsecure-Labs/vamp-orchestrator)
 
 ---
 
 © VampSecure Studios — VampSecure Labs Security Research Division
 
-## Versión
-v1.3.0 — VampSecure Labs Security Research Division
+## Historial de versiones
+
+| Versión | Cambios principales |
+|---------|---------------------|
+| v1.7.0 | CLI unificado con subcomandos; paquete importable (S3 modularización) |
+| v1.6.0 | `--delta FILE` — diff NEW/RECURRING/RESOLVED entre escaneos |
+| v1.5.0 | `--watch N` daemon mode; `--warn-days` cert-expiry; `--report-pdf` fpdf2 |
+| v1.4.0 | Markdown/CSV export; VSL engagement report (`--report-html/pdf`) |
+| v1.3.0 | HTML dark-theme report; multi-host batch scanning |
+| v1.0.0 | MVP TLS/SSL auditor — grading A+…F, protocol/cipher/cert checks |
+
+---
+
+© VampSecure Studios — VampSecure Labs Security Research Division
