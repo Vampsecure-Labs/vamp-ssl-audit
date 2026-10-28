@@ -215,7 +215,7 @@ jobs:
 
 ```
 $ python3 vamp_ssl_audit.py -H expired.badssl.com -H self-signed.badssl.com -H badssl.com
-vamp-ssl-audit v1.7.1 — TLS/SSL Professional Auditor · VampSecure Labs
+vamp-ssl-audit v1.7.0 — TLS/SSL Professional Auditor · VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 Auditing 3 hosts with 3 workers...
 
@@ -522,7 +522,7 @@ jobs:
 
 ```
 $ python3 vamp_ssl_audit.py -H expired.badssl.com -H self-signed.badssl.com -H badssl.com
-vamp-ssl-audit v1.7.1 — Auditor Profesional TLS/SSL · VampSecure Labs
+vamp-ssl-audit v1.7.0 — Auditor Profesional TLS/SSL · VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 Auditando 3 hosts con 3 workers...
 
