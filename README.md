@@ -4,7 +4,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white" alt="Python 3.9+"/>
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform"/>
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License MIT"/>
+  <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License AGPL-3.0"/>
   <img src="https://img.shields.io/badge/VampSecure-Labs-magenta" alt="VampSecure Labs"/>
   <img src="https://github.com/Vampsecure-Labs/vamp-ssl-audit/actions/workflows/ci.yml/badge.svg" alt="CI"/>
 </p>
@@ -177,6 +177,7 @@ jobs:
 | `--report-scope TEXT` | — | Scope description for VSL engagement report |
 | `--report-html FILE` | — | Export unified VSL client report (HTML) |
 | `--report-pdf FILE` | — | Export unified VSL client report (PDF, requires fpdf2) |
+| `--lang {en,es}` | en | Output language: `en` English, `es` Spanish |
 
 ### Output Formats
 
@@ -215,7 +216,7 @@ jobs:
 
 ```
 $ python3 vamp_ssl_audit.py -H expired.badssl.com -H self-signed.badssl.com -H badssl.com
-vamp-ssl-audit v1.7.0 — TLS/SSL Professional Auditor · VampSecure Labs
+vamp-ssl-audit v1.8.0 — TLS/SSL Professional Auditor · VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 Auditing 3 hosts with 3 workers...
 
@@ -305,6 +306,7 @@ Use exclusively on systems you own or for which you hold explicit written author
 
 | Version | Main changes |
 |---------|-------------|
+| v1.8.0 | Bilingual EN/ES output via `--lang en|es` |
 | v1.7.1 | Bilingual README (EN/ES) |
 | v1.7.0 | Unified CLI with subcommands; importable package (S3 modularization) |
 | v1.6.0 | `--delta FILE` — diff NEW/RECURRING/RESOLVED between scans |
@@ -484,6 +486,7 @@ jobs:
 | `--report-scope TEXT` | — | Descripción de alcance para informe VSL |
 | `--report-html FILE` | — | Exportar informe VSL unificado para cliente (HTML) |
 | `--report-pdf FILE` | — | Exportar informe VSL para cliente (PDF, requiere fpdf2) |
+| `--lang {en,es}` | en | Idioma de salida: `en` inglés, `es` español |
 
 ### Formatos de salida
 
@@ -522,7 +525,7 @@ jobs:
 
 ```
 $ python3 vamp_ssl_audit.py -H expired.badssl.com -H self-signed.badssl.com -H badssl.com
-vamp-ssl-audit v1.7.0 — Auditor Profesional TLS/SSL · VampSecure Labs
+vamp-ssl-audit v1.8.0 — Auditor Profesional TLS/SSL · VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 Auditando 3 hosts con 3 workers...
 
@@ -612,6 +615,7 @@ Uso exclusivo en sistemas de tu propiedad o sobre los que dispongas de autorizac
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| v1.8.0 | Salida bilingüe EN/ES mediante `--lang en|es` |
 | v1.7.1 | README bilingüe (EN/ES) |
 | v1.7.0 | CLI unificado con subcomandos; paquete importable (S3 modularización) |
 | v1.6.0 | `--delta FILE` — diff NEW/RECURRING/RESOLVED entre escaneos |
