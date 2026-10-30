@@ -19,6 +19,7 @@ from ._models import (
     CertInfo,
     GRADE_DESCRIPTION,
     HTML_GRADE_COLOR,
+    _T,
 )
 
 
@@ -49,7 +50,7 @@ def to_json(results: list[AuditResult]) -> str:
             "timestamp":             r.timestamp,
             "error":                 r.error,
             "grade":                 r.grade,
-            "grade_description":     GRADE_DESCRIPTION.get(r.grade, ""),
+            "grade_description":     str(GRADE_DESCRIPTION.get(r.grade, "")),
             "negotiated_protocol":   r.negotiated_protocol,
             "negotiated_cipher":     r.negotiated_cipher,
             "supported_protocols":   r.supported_protocols,
@@ -79,7 +80,7 @@ def to_json(results: list[AuditResult]) -> str:
             "generated": datetime.now(timezone.utc).isoformat(),
             "results":   [_result_dict(r) for r in results],
         },
-        indent=2, ensure_ascii=False,
+        indent=2, ensure_ascii=False, default=str,
     )
 
 
@@ -104,7 +105,7 @@ def to_html(results: list[AuditResult]) -> str:
 
         grade         = r.grade
         _, grade_hex  = HTML_GRADE_COLOR.get(grade, ("grade-f", "#ff2222"))
-        grade_desc_h  = escape(GRADE_DESCRIPTION.get(grade, ""))
+        grade_desc_h  = escape(str(GRADE_DESCRIPTION.get(grade, "")))
 
         cert_html = ""
         if r.cert:
@@ -116,14 +117,14 @@ def to_html(results: list[AuditResult]) -> str:
                 san_str += f" … (+{len(c.san_entries)-8})"
             cert_html = f"""
             <div class="cert-block">
-              <h3>Certificado X.509</h3>
+              <h3>{_T("X.509 Certificate", "Certificado X.509")}</h3>
               <table class="info-table">
-                <tr><td>Sujeto</td><td>{escape(c.subject)}</td></tr>
-                <tr><td>Emisor</td><td>{escape(c.issuer)}</td></tr>
-                <tr><td>Clave</td><td>{escape(c.key_type)} {c.key_bits} bits</td></tr>
-                <tr><td>Firma</td><td>{escape(c.sig_algorithm)}</td></tr>
-                <tr><td>Expira</td><td class="{exp_cls}">{c.not_after.date() if c.not_after else "?"} ({c.days_remaining}d)</td></tr>
-                <tr><td>Autofirmado</td><td class="{'sev-high' if c.is_self_signed else 'good'}">{'SÍ' if c.is_self_signed else 'No'}</td></tr>
+                <tr><td>{_T("Subject", "Sujeto")}</td><td>{escape(c.subject)}</td></tr>
+                <tr><td>{_T("Issuer", "Emisor")}</td><td>{escape(c.issuer)}</td></tr>
+                <tr><td>{_T("Key", "Clave")}</td><td>{escape(c.key_type)} {c.key_bits} bits</td></tr>
+                <tr><td>{_T("Signature", "Firma")}</td><td>{escape(c.sig_algorithm)}</td></tr>
+                <tr><td>{_T("Expires", "Expira")}</td><td class="{exp_cls}">{c.not_after.date() if c.not_after else "?"} ({c.days_remaining}d)</td></tr>
+                <tr><td>{_T("Self-signed", "Autofirmado")}</td><td class="{'sev-high' if c.is_self_signed else 'good'}">{str(_T('YES', 'SÍ')) if c.is_self_signed else str(_T('No', 'No'))}</td></tr>
                 <tr><td>SAN</td><td>{san_str or '—'}</td></tr>
               </table>
             </div>"""
@@ -135,7 +136,7 @@ def to_html(results: list[AuditResult]) -> str:
                 remed_html = ""
                 if f.remediation:
                     remed_html = (
-                        f'<details class="remed"><summary>Ver remediación</summary>'
+                        f'<details class="remed"><summary>{_T("See remediation", "Ver remediación")}</summary>'
                         f'<pre>{escape(f.remediation)}</pre></details>'
                     )
                 rows_f += (
@@ -146,13 +147,13 @@ def to_html(results: list[AuditResult]) -> str:
                 )
             findings_html = f"""
             <table class="findings-table">
-              <thead><tr><th>Severidad</th><th>Categoría</th><th>Hallazgo</th><th>Detalle / Remediación</th></tr></thead>
+              <thead><tr><th>{_T("Severity", "Severidad")}</th><th>{_T("Category", "Categoría")}</th><th>{_T("Finding", "Hallazgo")}</th><th>{_T("Detail / Remediation", "Detalle / Remediación")}</th></tr></thead>
               <tbody>{rows_f}</tbody>
             </table>"""
         else:
-            findings_html = '<p class="good">✔ Sin hallazgos de seguridad</p>'
+            findings_html = f'<p class="good">✔ {_T("No security findings", "Sin hallazgos de seguridad")}</p>'
 
-        hsts_s = escape(r.hsts_header) if r.hsts_header else '<span class="sev-high">AUSENTE</span>'
+        hsts_s = escape(r.hsts_header) if r.hsts_header else f'<span class="sev-high">{_T("ABSENT", "AUSENTE")}</span>'
 
         rows_html.append(f"""
         <div class="result-block">
@@ -164,13 +165,13 @@ def to_html(results: list[AuditResult]) -> str:
             </div>
           </div>
           <div class="meta-row">
-            <span><b>Protocolo:</b> {escape(r.negotiated_protocol)}</span>
+            <span><b>{_T("Protocol", "Protocolo")}:</b> {escape(r.negotiated_protocol)}</span>
             <span><b>Cipher:</b> {escape(r.negotiated_cipher)}</span>
-            <span><b>Legacy aceptados:</b> {escape(', '.join(r.supported_protocols)) or '—'}</span>
+            <span><b>{_T("Legacy accepted", "Legacy aceptados")}:</b> {escape(', '.join(r.supported_protocols)) or '—'}</span>
             <span><b>HSTS:</b> {hsts_s}</span>
           </div>
           {cert_html}
-          <h3>Hallazgos ({len(r.findings)})</h3>
+          <h3>{_T("Findings", "Hallazgos")} ({len(r.findings)})</h3>
           {findings_html}
         </div>""")
 
@@ -178,7 +179,7 @@ def to_html(results: list[AuditResult]) -> str:
     all_rows  = "\n".join(rows_html)
 
     return f"""<!DOCTYPE html>
-<html lang="es">
+<html lang="{_T("en", "es")}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -224,7 +225,7 @@ footer {{ margin-top: 32px; text-align: center; color: var(--text-dim); font-siz
 <body>
 <header>
   <h1>VampSecure Labs — SSL/TLS Audit Report</h1>
-  <p>{TOOL_NAME} v{VERSION} · {generated} · VampSecure Studios · Uso exclusivo en auditorías autorizadas</p>
+  <p>{TOOL_NAME} v{VERSION} · {generated} · VampSecure Studios · {_T("For authorized audits only", "Uso exclusivo en auditorías autorizadas")}</p>
 </header>
 {all_rows}
 <footer>© VampSecure Studios — VampSecure Labs Security Research Division</footer>
@@ -240,18 +241,18 @@ def to_markdown(results: list[AuditResult]) -> str:
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines: list[str] = []
 
-    lines.append("# VampSecure Labs — Informe de Auditoría SSL/TLS")
+    lines.append(f"# VampSecure Labs — {_T('SSL/TLS Audit Report', 'Informe de Auditoría SSL/TLS')}")
     lines.append("")
-    lines.append(f"**Herramienta:** {TOOL_NAME} v{VERSION}  ")
-    lines.append(f"**Generado:** {generated}  ")
-    lines.append(f"**Hosts analizados:** {len(results)}  ")
+    lines.append(f"**{_T('Tool', 'Herramienta')}:** {TOOL_NAME} v{VERSION}  ")
+    lines.append(f"**{_T('Generated', 'Generado')}:** {generated}  ")
+    lines.append(f"**{_T('Hosts analysed', 'Hosts analizados')}:** {len(results)}  ")
     lines.append("")
     lines.append("---")
     lines.append("")
 
-    lines.append("## Resumen Ejecutivo")
+    lines.append(f"## {_T('Executive Summary', 'Resumen Ejecutivo')}")
     lines.append("")
-    lines.append("| Host:Puerto | Nota | Protocolo | Cert Expira | HSTS | Hallazgos C/H | Severidad Máx. |")
+    lines.append(f"| {_T('Host:Port', 'Host:Puerto')} | {_T('Grade', 'Nota')} | {_T('Protocol', 'Protocolo')} | {_T('Cert Expires', 'Cert Expira')} | HSTS | {_T('C/H Findings', 'Hallazgos C/H')} | {_T('Max Severity', 'Severidad Máx.')} |")
     lines.append("|-------------|------|-----------|-------------|------|---------------|----------------|")
     for r in results:
         if r.error:
@@ -277,33 +278,33 @@ def to_markdown(results: list[AuditResult]) -> str:
             lines.append("")
             continue
 
-        grade_desc = GRADE_DESCRIPTION.get(r.grade, "")
-        lines.append(f"### 📊 Calificación: **{r.grade}** — {grade_desc}")
+        grade_desc = str(GRADE_DESCRIPTION.get(r.grade, ""))
+        lines.append(f"### 📊 {_T('Grade', 'Calificación')}: **{r.grade}** — {grade_desc}")
         lines.append("")
 
-        lines.append("| Campo | Valor |")
+        lines.append(f"| {_T('Field', 'Campo')} | {_T('Value', 'Valor')} |")
         lines.append("|-------|-------|")
-        lines.append(f"| Protocolo negociado | `{r.negotiated_protocol}` |")
-        lines.append(f"| Cipher negociado | `{r.negotiated_cipher}` |")
+        lines.append(f"| {_T('Negotiated protocol', 'Protocolo negociado')} | `{r.negotiated_protocol}` |")
+        lines.append(f"| {_T('Negotiated cipher', 'Cipher negociado')} | `{r.negotiated_cipher}` |")
         prots = ", ".join(r.supported_protocols) if r.supported_protocols else "—"
-        lines.append(f"| Protocolos legacy aceptados | {prots} |")
-        hsts_val = f"`{r.hsts_header}`" if r.hsts_header else "**AUSENTE**"
+        lines.append(f"| {_T('Legacy protocols accepted', 'Protocolos legacy aceptados')} | {prots} |")
+        hsts_val = f"`{r.hsts_header}`" if r.hsts_header else f"**{_T('ABSENT', 'AUSENTE')}**"
         lines.append(f"| HSTS | {hsts_val} |")
         lines.append("")
 
         if r.cert:
             c = r.cert
-            lines.append("### Certificado X.509")
+            lines.append(f"### {_T('X.509 Certificate', 'Certificado X.509')}")
             lines.append("")
-            lines.append("| Campo | Valor |")
+            lines.append(f"| {_T('Field', 'Campo')} | {_T('Value', 'Valor')} |")
             lines.append("|-------|-------|")
-            lines.append(f"| Sujeto | `{c.subject}` |")
-            lines.append(f"| Emisor | `{c.issuer}` |")
-            lines.append(f"| Clave | {c.key_type} {c.key_bits} bits |")
-            lines.append(f"| Firma | {c.sig_algorithm} |")
+            lines.append(f"| {_T('Subject', 'Sujeto')} | `{c.subject}` |")
+            lines.append(f"| {_T('Issuer', 'Emisor')} | `{c.issuer}` |")
+            lines.append(f"| {_T('Key', 'Clave')} | {c.key_type} {c.key_bits} bits |")
+            lines.append(f"| {_T('Signature', 'Firma')} | {c.sig_algorithm} |")
             not_after_s = c.not_after.date() if c.not_after else "?"
-            lines.append(f"| Expira | {not_after_s} ({c.days_remaining} días) |")
-            lines.append(f"| Autofirmado | {'⚠️ SÍ' if c.is_self_signed else '✔ No'} |")
+            lines.append(f"| {_T('Expires', 'Expira')} | {not_after_s} ({c.days_remaining} {_T('days', 'días')}) |")
+            lines.append(f"| {_T('Self-signed', 'Autofirmado')} | {'⚠️ ' + str(_T('YES', 'SÍ')) if c.is_self_signed else '✔ No'} |")
             if c.san_entries:
                 san_md = ", ".join(f"`{s}`" for s in c.san_entries[:8])
                 if len(c.san_entries) > 8:
@@ -312,7 +313,7 @@ def to_markdown(results: list[AuditResult]) -> str:
             lines.append("")
 
         if r.findings:
-            lines.append("### 🔍 Hallazgos")
+            lines.append(f"### 🔍 {_T('Findings', 'Hallazgos')}")
             lines.append("")
 
             severity_groups = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -328,7 +329,7 @@ def to_markdown(results: list[AuditResult]) -> str:
                     lines.append(f"> {f.detail}")
                     if f.remediation:
                         lines.append("> ")
-                        lines.append("> **Remediación:**")
+                        lines.append(f"> **{_T('Remediation', 'Remediación')}:**")
                         lines.append("> ")
                         lines.append("> ```")
                         for rline in f.remediation.splitlines():
@@ -338,20 +339,20 @@ def to_markdown(results: list[AuditResult]) -> str:
 
             priorizados = [f for f in r.findings if f.severity in ("CRITICAL", "HIGH") and f.remediation]
             if priorizados:
-                lines.append("### ✅ Pasos de remediación priorizados")
+                lines.append(f"### ✅ {_T('Prioritised remediation steps', 'Pasos de remediación priorizados')}")
                 lines.append("")
                 for i, f in enumerate(priorizados, 1):
                     lines.append(f"{i}. **[{f.severity}]** {f.name}")
                 lines.append("")
         else:
-            lines.append("### ✅ Sin hallazgos de seguridad")
+            lines.append(f"### ✅ {_T('No security findings', 'Sin hallazgos de seguridad')}")
             lines.append("")
 
         lines.append("---")
         lines.append("")
 
-    lines.append(f"*Generado por {TOOL_NAME} v{VERSION} · VampSecure Studios · VampSecure Labs Security Research Division*  ")
-    lines.append("*Uso exclusivo en entornos autorizados. El uso no autorizado es ilegal.*")
+    lines.append(f"*{_T('Generated by', 'Generado por')} {TOOL_NAME} v{VERSION} · VampSecure Studios · VampSecure Labs Security Research Division*  ")
+    lines.append(f"*{_T('For authorized environments only. Unauthorised use is illegal.', 'Uso exclusivo en entornos autorizados. El uso no autorizado es ilegal.')}*")
     lines.append("")
 
     return "\n".join(lines)
@@ -368,14 +369,30 @@ def to_csv(results: list[AuditResult], base_path: str) -> tuple[str, str]:
     buf_hosts = io.StringIO()
     writer_h = csv_module.writer(buf_hosts)
     writer_h.writerow([
-        "host", "puerto", "nota", "descripcion_nota",
-        "protocolo", "cipher", "protocolos_legacy",
-        "cert_sujeto", "cert_emisor", "cert_clave", "cert_firma",
-        "cert_expira", "cert_dias_restantes", "cert_autofirmado",
-        "hsts", "hsts_valor",
-        "num_hallazgos", "hallazgos_critical", "hallazgos_high",
-        "hallazgos_medium", "hallazgos_low",
-        "severidad_maxima", "error", "timestamp",
+        "host",
+        str(_T("port", "puerto")),
+        str(_T("grade", "nota")),
+        str(_T("grade_description", "descripcion_nota")),
+        str(_T("protocol", "protocolo")),
+        "cipher",
+        str(_T("legacy_protocols", "protocolos_legacy")),
+        str(_T("cert_subject", "cert_sujeto")),
+        str(_T("cert_issuer", "cert_emisor")),
+        str(_T("cert_key", "cert_clave")),
+        str(_T("cert_signature", "cert_firma")),
+        str(_T("cert_expires", "cert_expira")),
+        str(_T("cert_days_remaining", "cert_dias_restantes")),
+        str(_T("cert_self_signed", "cert_autofirmado")),
+        "hsts",
+        str(_T("hsts_value", "hsts_valor")),
+        str(_T("num_findings", "num_hallazgos")),
+        str(_T("findings_critical", "hallazgos_critical")),
+        str(_T("findings_high", "hallazgos_high")),
+        str(_T("findings_medium", "hallazgos_medium")),
+        str(_T("findings_low", "hallazgos_low")),
+        str(_T("max_severity", "severidad_maxima")),
+        "error",
+        "timestamp",
     ])
     for r in results:
         cert = r.cert
@@ -406,9 +423,15 @@ def to_csv(results: list[AuditResult], base_path: str) -> tuple[str, str]:
     buf_findings = io.StringIO()
     writer_f = csv_module.writer(buf_findings)
     writer_f.writerow([
-        "host", "puerto", "nota_host",
-        "severidad", "categoria", "hallazgo", "detalle",
-        "cap_nota", "remediacion",
+        "host",
+        str(_T("port", "puerto")),
+        str(_T("host_grade", "nota_host")),
+        str(_T("severity", "severidad")),
+        str(_T("category", "categoria")),
+        str(_T("finding", "hallazgo")),
+        str(_T("detail", "detalle")),
+        str(_T("grade_cap", "cap_nota")),
+        str(_T("remediation", "remediacion")),
     ])
     for r in results:
         for f in r.findings:
@@ -449,11 +472,11 @@ def _findings_vsl(results: list) -> list:
             n += 1
 
             partes_evidencia = [
-                f"Categoría: {f.category}",
-                f"Detalle: {f.detail}",
+                f"{_T('Category', 'Categoría')}: {f.category}",
+                f"{_T('Detail', 'Detalle')}: {f.detail}",
             ]
             if f.grade_cap:
-                partes_evidencia.append(f"Nota SSL máxima con este hallazgo: {f.grade_cap}")
+                partes_evidencia.append(f"{_T('Max SSL grade with this finding', 'Nota SSL máxima con este hallazgo')}: {f.grade_cap}")
 
             hallazgos.append(VSLFinding(
                 id          = f"SSL-{n:03d}",
@@ -462,7 +485,10 @@ def _findings_vsl(results: list) -> list:
                 description = f.detail,
                 evidence    = " | ".join(partes_evidencia),
                 affected    = objetivo,
-                remediation = f.remediation or "Consultar la guía de buenas prácticas TLS de BSI/NIST.",
+                remediation = f.remediation or str(_T(
+                    "Refer to BSI/NIST TLS best-practice guide.",
+                    "Consultar la guía de buenas prácticas TLS de BSI/NIST.",
+                )),
                 tags        = ["ssl", "tls", f.category.lower(), f.severity.lower()],
             ))
 

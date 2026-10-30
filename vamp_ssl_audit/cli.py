@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+import vamp_ssl_audit._models as _models
 from ._models import (
     VERSION,
     TOOL_NAME,
@@ -23,6 +24,7 @@ from ._models import (
     SEVERITY_ORDER,
     GRADE_COLOR,
     GRADE_DESCRIPTION,
+    _T,
 )
 from ._core import SSLAuditor, apply_delta_scan
 from ._report import to_json, to_html, to_markdown, to_csv, _findings_vsl
@@ -35,9 +37,9 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-ssl-audit v1.7.0 · TLS/SSL Professional Auditor con mTLS Testing
+  vamp-ssl-audit v1.8.0 · TLS/SSL Professional Auditor with mTLS Testing
   ────────────────────────────────────────────────────────────────────────
-  USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
+  FOR AUTHORIZED AUDITS ONLY · Unauthorised use is illegal
 """
 
 SEVERITY_COLOR = {
@@ -65,40 +67,40 @@ def print_result(result: AuditResult) -> None:
     sev_color  = SEVERITY_COLOR.get(sev, "white")
     grade      = result.grade
     grade_col  = GRADE_COLOR.get(grade, "white")
-    grade_desc = GRADE_DESCRIPTION.get(grade, "")
+    grade_desc = str(GRADE_DESCRIPTION.get(grade, ""))
 
     console.print(f"\n[bold cyan]{'─'*60}[/]")
     console.print(
-        f"  Nota: [{grade_col}]{grade:>2}[/{grade_col}]  "
+        f"  {_T('Grade', 'Nota')}: [{grade_col}]{grade:>2}[/{grade_col}]  "
         f"[bold]{result.target}[/]  "
         f"[{sev_color}]{sev}[/{sev_color}]"
     )
     console.print(f"  [dim]{grade_desc}[/]")
     console.print(f"[bold cyan]{'─'*60}[/]")
 
-    console.print(f"  [bold]Protocolo negociado:[/] {result.negotiated_protocol or 'N/A'}")
-    console.print(f"  [bold]Cipher negociado:[/]    {result.negotiated_cipher or 'N/A'}")
+    console.print(f"  [bold]{_T('Negotiated protocol', 'Protocolo negociado')}:[/] {result.negotiated_protocol or 'N/A'}")
+    console.print(f"  [bold]{_T('Negotiated cipher', 'Cipher negociado')}:[/]    {result.negotiated_cipher or 'N/A'}")
 
     if result.supported_protocols:
         console.print(
-            "  [bold red]Protocolos inseguros aceptados:[/] "
+            f"  [bold red]{_T('Insecure protocols accepted', 'Protocolos inseguros aceptados')}:[/] "
             + ", ".join(result.supported_protocols)
         )
 
     if result.cert:
         c = result.cert
         exp_color = "red" if c.days_remaining < 30 else ("yellow" if c.days_remaining < 90 else "green")
-        console.print("\n  [bold]Certificado[/]")
-        console.print(f"    Sujeto:        {c.subject}")
-        console.print(f"    Emisor:        {c.issuer}")
-        console.print(f"    Clave:         {c.key_type} {c.key_bits} bits")
-        console.print(f"    Firma:         {c.sig_algorithm}")
+        console.print(f"\n  [bold]{_T('Certificate', 'Certificado')}[/]")
+        console.print(f"    {_T('Subject', 'Sujeto')}:        {c.subject}")
+        console.print(f"    {_T('Issuer', 'Emisor')}:         {c.issuer}")
+        console.print(f"    {_T('Key', 'Clave')}:            {c.key_type} {c.key_bits} bits")
+        console.print(f"    {_T('Signature', 'Firma')}:       {c.sig_algorithm}")
         console.print(
-            f"    Expira:        [{exp_color}]"
+            f"    {_T('Expires', 'Expira')}:        [{exp_color}]"
             f"{c.not_after.date() if c.not_after else 'N/A'} ({c.days_remaining}d)"
             f"[/{exp_color}]"
         )
-        console.print(f"    Autofirmado:   {'[red]SÍ[/red]' if c.is_self_signed else '[green]No[/green]'}")
+        console.print(f"    {_T('Self-signed', 'Autofirmado')}:   {'[red]' + str(_T('YES', 'SÍ')) + '[/red]' if c.is_self_signed else '[green]No[/green]'}")
         if c.san_entries:
             console.print(
                 f"    SAN ({len(c.san_entries)}):     "
@@ -109,15 +111,15 @@ def print_result(result: AuditResult) -> None:
     if result.hsts_header:
         console.print(f"\n  [bold]HSTS:[/] [green]{result.hsts_header}[/]")
     else:
-        console.print("\n  [bold]HSTS:[/] [red]AUSENTE[/]")
+        console.print(f"\n  [bold]HSTS:[/] [red]{_T('ABSENT', 'AUSENTE')}[/]")
 
     if result.findings:
         console.print()
         tbl = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
-        tbl.add_column("SEV",       width=10)
-        tbl.add_column("Categoría", width=18)
-        tbl.add_column("Hallazgo",  min_width=32)
-        tbl.add_column("Detalle",   min_width=38)
+        tbl.add_column("SEV",                              width=10)
+        tbl.add_column(str(_T("Category", "Categoría")),  width=18)
+        tbl.add_column(str(_T("Finding", "Hallazgo")),    min_width=32)
+        tbl.add_column(str(_T("Detail", "Detalle")),      min_width=38)
         for f in result.findings:
             color = SEVERITY_COLOR.get(f.severity, "white")
             tbl.add_row(
@@ -130,7 +132,7 @@ def print_result(result: AuditResult) -> None:
 
         criticos = [f for f in result.findings if f.severity in ("CRITICAL", "HIGH") and f.remediation]
         if criticos:
-            console.print("\n  [bold cyan]Pasos de remediación prioritarios:[/]")
+            console.print(f"\n  [bold cyan]{_T('Priority remediation steps', 'Pasos de remediación prioritarios')}:[/]")
             for f in criticos:
                 console.print(
                     Panel(
@@ -141,21 +143,21 @@ def print_result(result: AuditResult) -> None:
                     )
                 )
     else:
-        console.print("\n  [bold green]✔ Sin hallazgos de seguridad[/]")
+        console.print(f"\n  [bold green]✔ {_T('No security findings', 'Sin hallazgos de seguridad')}[/]")
 
 
 def print_summary(results: list[AuditResult]) -> None:
     """Tabla resumen de todos los hosts auditados."""
     console.print("\n")
-    tbl = Table(title="Resumen de auditoría TLS/SSL",
+    tbl = Table(title=str(_T("TLS/SSL Audit Summary", "Resumen de auditoría TLS/SSL")),
                 header_style="bold cyan", show_lines=True)
-    tbl.add_column("Host:puerto",    min_width=24)
-    tbl.add_column("Nota",           width=6)
-    tbl.add_column("Protocolo",      width=10)
-    tbl.add_column("Cert expira",    width=14)
-    tbl.add_column("HSTS",           width=6)
-    tbl.add_column("Hallazgos C/H",  width=12)
-    tbl.add_column("Severidad máx.", width=12)
+    tbl.add_column(str(_T("Host:port",     "Host:puerto")),    min_width=24)
+    tbl.add_column(str(_T("Grade",         "Nota")),           width=6)
+    tbl.add_column(str(_T("Protocol",      "Protocolo")),      width=10)
+    tbl.add_column(str(_T("Cert expires",  "Cert expira")),    width=14)
+    tbl.add_column("HSTS",                                     width=6)
+    tbl.add_column(str(_T("C/H Findings",  "Hallazgos C/H")), width=12)
+    tbl.add_column(str(_T("Max severity",  "Severidad máx.")), width=12)
 
     for r in results:
         if r.error:
@@ -214,7 +216,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--timeout", type=int, default=10,
                    help="Timeout de conexión en segundos (default: 10)")
     p.add_argument("--workers", type=int, default=5,
-                   help="Hilos paralelos para múltiples hosts (default: 5)")
+                   help="Parallel threads for multiple hosts (default: 5)")
     p.add_argument("--json", metavar="FILE",
                    help="Guardar resultado completo en JSON (incluye remediaciones)")
     p.add_argument("--html", metavar="FILE",
@@ -246,8 +248,12 @@ def _parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
+        "--lang", choices=["en", "es"], default="en",
+        help="Output language for report labels and findings (default: en)",
+    )
+    p.add_argument(
         "--watch", type=int, metavar="SECONDS",
-        help="Daemon mode: re-auditar cada N segundos, mostrar solo hallazgos NEW/RESOLVED",
+        help="Daemon mode: re-audit every N seconds, show only NEW/RESOLVED findings",
     )
     p.add_argument(
         "--delta", metavar="FILE",
@@ -268,7 +274,7 @@ def _resolve_targets(args: argparse.Namespace) -> list[tuple[str, int]]:
     if args.file:
         path = Path(args.file)
         if not path.is_file():
-            console.print(f"[bold red]ERROR:[/] Fichero no encontrado: {args.file}")
+            console.print(f"[bold red]ERROR:[/] {_T('File not found', 'Fichero no encontrado')}: {args.file}")
             sys.exit(1)
         raw.extend(
             line.strip() for line in path.read_text().splitlines()
@@ -276,7 +282,7 @@ def _resolve_targets(args: argparse.Namespace) -> list[tuple[str, int]]:
         )
 
     if not raw:
-        console.print("[bold red]ERROR:[/] Indica al menos un host con -H o --file")
+        console.print(f"[bold red]ERROR:[/] {_T('Specify at least one host with -H or --file', 'Indica al menos un host con -H o --file')}")
         sys.exit(1)
 
     targets: list[tuple[str, int]] = []
@@ -286,7 +292,7 @@ def _resolve_targets(args: argparse.Namespace) -> list[tuple[str, int]]:
             try:
                 targets.append((host.strip(), int(port_str)))
             except ValueError:
-                console.print(f"[yellow]Aviso:[/] Puerto inválido en '{entry}', usando {args.port}")
+                console.print(f"[yellow]{_T('Warning', 'Aviso')}:[/] {_T('Invalid port in', 'Puerto inválido en')} '{entry}', {_T('using', 'usando')} {args.port}")
                 targets.append((entry, args.port))
         else:
             targets.append((entry.strip(), args.port))
@@ -361,6 +367,7 @@ def main() -> None:
     console.print(BANNER, style="bold magenta")
 
     args = _parse_args()
+    _models.LANG = args.lang
 
     if getattr(args, "watch", None) is not None:
         _daemon_loop(args, args.watch)
@@ -375,18 +382,18 @@ def main() -> None:
         mtls_key=getattr(args, "mtls_key", None),
     )
 
-    console.print(f"[bold cyan]Auditando {len(targets)} host(s)…[/]\n")
+    console.print(f"[bold cyan]{_T('Auditing', 'Auditando')} {len(targets)} host(s)…[/]\n")
 
     results: list[AuditResult] = []
 
     if len(targets) == 1:
         host, port = targets[0]
-        with console.status(f"[cyan]Auditando {host}:{port}…[/]", spinner="dots"):
+        with console.status(f"[cyan]{_T('Auditing', 'Auditando')} {host}:{port}…[/]", spinner="dots"):
             results.append(auditor.audit(host, port))
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(auditor.audit, h, p): (h, p) for h, p in targets}
-            with console.status("[cyan]Auditando hosts en paralelo…[/]", spinner="dots"):
+            with console.status(f"[cyan]{_T('Auditing hosts in parallel', 'Auditando hosts en paralelo')}…[/]", spinner="dots"):
                 for future in concurrent.futures.as_completed(futures):
                     results.append(future.result())
 
@@ -412,26 +419,26 @@ def main() -> None:
     print_summary(results)
 
     if delta_resolved:
-        console.print("\n[bold green]  ✅ RESUELTOS desde el baseline:[/]")
+        console.print(f"\n[bold green]  ✅ {_T('RESOLVED since baseline', 'RESUELTOS desde el baseline')}:[/]")
         for k in delta_resolved:
             console.print(f"[dim]    [-RESOLVED] {k}[/]")
 
     if args.json:
         Path(args.json).write_text(to_json(results), encoding="utf-8")
-        console.print(f"\n[green]✔[/] JSON guardado en [bold]{args.json}[/]")
+        console.print(f"\n[green]✔[/] JSON {_T('saved to', 'guardado en')} [bold]{args.json}[/]")
 
     if args.html:
         Path(args.html).write_text(to_html(results), encoding="utf-8")
-        console.print(f"[green]✔[/] HTML guardado en [bold]{args.html}[/]")
+        console.print(f"[green]✔[/] HTML {_T('saved to', 'guardado en')} [bold]{args.html}[/]")
 
     if args.markdown:
         Path(args.markdown).write_text(to_markdown(results), encoding="utf-8")
-        console.print(f"[green]✔[/] Markdown guardado en [bold]{args.markdown}[/]")
+        console.print(f"[green]✔[/] Markdown {_T('saved to', 'guardado en')} [bold]{args.markdown}[/]")
 
     if args.csv:
         p_hosts, p_findings = to_csv(results, args.csv)
-        console.print(f"[green]✔[/] CSV resumen guardado en [bold]{p_hosts}[/]")
-        console.print(f"[green]✔[/] CSV hallazgos guardado en [bold]{p_findings}[/]")
+        console.print(f"[green]✔[/] CSV {_T('summary saved to', 'resumen guardado en')} [bold]{p_hosts}[/]")
+        console.print(f"[green]✔[/] CSV {_T('findings saved to', 'hallazgos guardado en')} [bold]{p_findings}[/]")
 
     if getattr(args, "report_html", None) or getattr(args, "report_pdf", None):
         from vampsec_report import VampSecReport, meta_from_args
@@ -439,10 +446,10 @@ def main() -> None:
         report = VampSecReport(meta=meta, findings=_findings_vsl(results))
         if args.report_html:
             report.to_html_client(args.report_html)
-            console.print(f"[green]✔[/] Informe cliente HTML guardado en [bold]{args.report_html}[/]")
+            console.print(f"[green]✔[/] {_T('Client HTML report saved to', 'Informe cliente HTML guardado en')} [bold]{args.report_html}[/]")
         if args.report_pdf:
             report.to_pdf(args.report_pdf)
-            console.print(f"[green]✔[/] Informe cliente PDF guardado en [bold]{args.report_pdf}[/]")
+            console.print(f"[green]✔[/] {_T('Client PDF report saved to', 'Informe cliente PDF guardado en')} [bold]{args.report_pdf}[/]")
 
     max_sev = "INFO"
     for r in results:
@@ -456,5 +463,5 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        console.print("\n[bold yellow]Interrumpido por el usuario.[/]")
+        console.print(f"\n[bold yellow]{_T('Interrupted by user.', 'Interrumpido por el usuario.')}[/]")
         sys.exit(0)

@@ -39,6 +39,7 @@ from ._models import (
     AuditResult,
     Finding,
     CertInfo,
+    _T,
     _REMED_TLS_LEGACY,
     _REMED_NULL_CIPHER,
     _REMED_EXPORT_CIPHER,
@@ -219,8 +220,8 @@ class SSLAuditor:
             hostname_ok = False
             result.findings.append(Finding(
                 severity="CRITICAL",
-                category="Certificado",
-                name="Error de validación TLS",
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("TLS validation error", "Error de validación TLS")),
                 detail=str(exc),
                 grade_cap="T",
             ))
@@ -234,7 +235,10 @@ class SSLAuditor:
                     cipher_name   = cipher_info[0] if cipher_info else ""
                     der_cert      = ssock.getpeercert(binary_form=True)
         except OSError as exc:
-            raise RuntimeError(f"No se puede conectar a {result.host}:{result.port} — {exc}") from exc
+            raise RuntimeError(str(_T(
+                f"Cannot connect to {result.host}:{result.port} — {exc}",
+                f"No se puede conectar a {result.host}:{result.port} — {exc}",
+            ))) from exc
 
         result.negotiated_protocol = proto_version
         result.negotiated_cipher   = cipher_name
@@ -245,10 +249,10 @@ class SSLAuditor:
                 cap = PROTOCOL_GRADE_CAP.get(proto_version, "B")
                 result.findings.append(Finding(
                     severity=sev,
-                    category="Protocolo",
-                    name=f"Protocolo negociado: {proto_version}",
-                    detail=detail,
-                    remediation=_REMED_TLS_LEGACY,
+                    category=str(_T("Protocol", "Protocolo")),
+                    name=str(_T(f"Negotiated protocol: {proto_version}", f"Protocolo negociado: {proto_version}")),
+                    detail=str(detail),
+                    remediation=str(_REMED_TLS_LEGACY),
                     grade_cap=cap,
                 ))
 
@@ -290,29 +294,38 @@ class SSLAuditor:
                 if label == "TLS 1.2" and self._strict_tls13:
                     result.findings.append(Finding(
                         severity="MEDIUM",
-                        category="Protocolo",
-                        name="Soporta TLS 1.2 (modo --strict-tls13 activo)",
-                        detail=(
+                        category=str(_T("Protocol", "Protocolo")),
+                        name=str(_T(
+                            "Supports TLS 1.2 (--strict-tls13 mode active)",
+                            "Soporta TLS 1.2 (modo --strict-tls13 activo)",
+                        )),
+                        detail=str(_T(
+                            "The server accepts TLS 1.2 in addition to TLS 1.3. "
+                            "In environments requiring TLS 1.3 exclusivity, this caps the maximum grade at B.",
                             "El servidor acepta TLS 1.2 además de TLS 1.3. "
-                            "En entornos que exigen exclusividad TLS 1.3, esto reduce la nota máxima a B."
-                        ),
-                        remediation=(
+                            "En entornos que exigen exclusividad TLS 1.3, esto reduce la nota máxima a B.",
+                        )),
+                        remediation=str(_T(
+                            "Configure the server to accept only TLS 1.3:\n"
+                            "  nginx:   ssl_protocols TLSv1.3;\n"
+                            "  apache:  SSLProtocol -all +TLSv1.3\n"
+                            "  haproxy: bind *:443 ssl-min-ver TLSv1.3",
                             "Configurar el servidor para aceptar únicamente TLS 1.3:\n"
                             "  nginx:   ssl_protocols TLSv1.3;\n"
                             "  apache:  SSLProtocol -all +TLSv1.3\n"
-                            "  haproxy: bind *:443 ssl-min-ver TLSv1.3"
-                        ),
+                            "  haproxy: bind *:443 ssl-min-ver TLSv1.3",
+                        )),
                         grade_cap="B",
                     ))
                 else:
-                    sev, detail = PROTOCOL_RISK.get(label, ("HIGH", "Protocolo obsoleto"))
+                    sev, detail = PROTOCOL_RISK.get(label, ("HIGH", _T("Obsolete protocol", "Protocolo obsoleto")))
                     cap = PROTOCOL_GRADE_CAP.get(label, "B")
                     result.findings.append(Finding(
                         severity=sev,
-                        category="Protocolo",
-                        name=f"Soporta {label}",
-                        detail=detail,
-                        remediation=_REMED_TLS_LEGACY,
+                        category=str(_T("Protocol", "Protocolo")),
+                        name=str(_T(f"Supports {label}", f"Soporta {label}")),
+                        detail=str(detail),
+                        remediation=str(_REMED_TLS_LEGACY),
                         grade_cap=cap,
                     ))
             else:
@@ -359,8 +372,8 @@ class SSLAuditor:
         except Exception as exc:
             result.findings.append(Finding(
                 severity="HIGH",
-                category="Certificado",
-                name="No se puede parsear el certificado",
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("Certificate cannot be parsed", "No se puede parsear el certificado")),
                 detail=str(exc),
                 grade_cap="F",
             ))
@@ -403,37 +416,52 @@ class SSLAuditor:
         if info.days_remaining < 0:
             result.findings.append(Finding(
                 severity="CRITICAL",
-                category="Certificado",
-                name="Certificado expirado",
-                detail=f"Venció hace {-info.days_remaining} días ({info.not_after.date()})",
-                remediation=_REMED_CERT_EXPIRED,
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("Expired certificate", "Certificado expirado")),
+                detail=str(_T(
+                    f"Expired {-info.days_remaining} days ago ({info.not_after.date()})",
+                    f"Venció hace {-info.days_remaining} días ({info.not_after.date()})",
+                )),
+                remediation=str(_REMED_CERT_EXPIRED),
                 grade_cap="F",
             ))
         elif info.days_remaining < 7:
             result.findings.append(Finding(
                 severity="CRITICAL",
-                category="Certificado",
-                name="Certificado expira en < 7 días",
-                detail=f"Expira en {info.days_remaining} días ({info.not_after.date()})",
-                remediation=_REMED_CERT_EXPIRED,
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("Certificate expires in < 7 days", "Certificado expira en < 7 días")),
+                detail=str(_T(
+                    f"Expires in {info.days_remaining} days ({info.not_after.date()})",
+                    f"Expira en {info.days_remaining} días ({info.not_after.date()})",
+                )),
+                remediation=str(_REMED_CERT_EXPIRED),
                 grade_cap="F",
             ))
         elif info.days_remaining < 30:
             result.findings.append(Finding(
                 severity="HIGH",
-                category="Certificado",
-                name="Certificado expira en < 30 días",
-                detail=f"Expira en {info.days_remaining} días ({info.not_after.date()})",
-                remediation=_REMED_CERT_EXPIRING,
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("Certificate expires in < 30 days", "Certificado expira en < 30 días")),
+                detail=str(_T(
+                    f"Expires in {info.days_remaining} days ({info.not_after.date()})",
+                    f"Expira en {info.days_remaining} días ({info.not_after.date()})",
+                )),
+                remediation=str(_REMED_CERT_EXPIRING),
                 grade_cap="B",
             ))
         elif self._warn_days > 30 and info.days_remaining < self._warn_days:
             result.findings.append(Finding(
                 severity="MEDIUM",
-                category="Certificado",
-                name=f"Certificado caduca en < {self._warn_days} días",
-                detail=f"Expira en {info.days_remaining} días ({info.not_after.date()})",
-                remediation=_REMED_CERT_EXPIRING,
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T(
+                    f"Certificate expires in < {self._warn_days} days",
+                    f"Certificado caduca en < {self._warn_days} días",
+                )),
+                detail=str(_T(
+                    f"Expires in {info.days_remaining} days ({info.not_after.date()})",
+                    f"Expira en {info.days_remaining} días ({info.not_after.date()})",
+                )),
+                remediation=str(_REMED_CERT_EXPIRING),
             ))
 
         info.serial = f"{cert.serial_number:X}"
@@ -444,18 +472,26 @@ class SSLAuditor:
             info.key_bits = pub.key_size
             if pub.key_size < 1024:
                 result.findings.append(Finding(
-                    severity="CRITICAL", category="Certificado",
-                    name="Clave RSA < 1024 bits",
-                    detail=f"Clave de {pub.key_size} bits — rota criptográficamente",
-                    remediation=_REMED_RSA_SMALL,
+                    severity="CRITICAL",
+                    category=str(_T("Certificate", "Certificado")),
+                    name=str(_T("RSA key < 1024 bits", "Clave RSA < 1024 bits")),
+                    detail=str(_T(
+                        f"{pub.key_size}-bit key — cryptographically broken",
+                        f"Clave de {pub.key_size} bits — rota criptográficamente",
+                    )),
+                    remediation=str(_REMED_RSA_SMALL),
                     grade_cap="F",
                 ))
             elif pub.key_size < 2048:
                 result.findings.append(Finding(
-                    severity="HIGH", category="Certificado",
-                    name="Clave RSA < 2048 bits",
-                    detail=f"Clave de {pub.key_size} bits — por debajo del mínimo recomendado",
-                    remediation=_REMED_RSA_WEAK,
+                    severity="HIGH",
+                    category=str(_T("Certificate", "Certificado")),
+                    name=str(_T("RSA key < 2048 bits", "Clave RSA < 2048 bits")),
+                    detail=str(_T(
+                        f"{pub.key_size}-bit key — below the recommended minimum",
+                        f"Clave de {pub.key_size} bits — por debajo del mínimo recomendado",
+                    )),
+                    remediation=str(_REMED_RSA_WEAK),
                     grade_cap="B",
                 ))
         elif isinstance(pub, ec.EllipticCurvePublicKey):
@@ -463,20 +499,28 @@ class SSLAuditor:
             info.key_bits = pub.key_size
             if pub.key_size < 224:
                 result.findings.append(Finding(
-                    severity="HIGH", category="Certificado",
-                    name="Clave EC < 224 bits",
-                    detail=f"Curva de {pub.key_size} bits — por debajo del mínimo seguro",
-                    remediation=_REMED_RSA_SMALL,
+                    severity="HIGH",
+                    category=str(_T("Certificate", "Certificado")),
+                    name=str(_T("EC key < 224 bits", "Clave EC < 224 bits")),
+                    detail=str(_T(
+                        f"{pub.key_size}-bit curve — below the secure minimum",
+                        f"Curva de {pub.key_size} bits — por debajo del mínimo seguro",
+                    )),
+                    remediation=str(_REMED_RSA_SMALL),
                     grade_cap="B",
                 ))
         elif isinstance(pub, dsa.DSAPublicKey):
             info.key_type = "DSA"
             info.key_bits = pub.key_size
             result.findings.append(Finding(
-                severity="HIGH", category="Certificado",
-                name="Clave DSA",
-                detail="DSA depreciado; migrar a RSA ≥ 2048 bits o EC P-256/P-384",
-                remediation=_REMED_DSA,
+                severity="HIGH",
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("DSA key", "Clave DSA")),
+                detail=str(_T(
+                    "DSA deprecated; migrate to RSA ≥ 2048 bits or EC P-256/P-384",
+                    "DSA depreciado; migrar a RSA ≥ 2048 bits o EC P-256/P-384",
+                )),
+                remediation=str(_REMED_DSA),
                 grade_cap="B",
             ))
         elif isinstance(pub, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
@@ -489,24 +533,26 @@ class SSLAuditor:
                 info.sig_algorithm = sig_alg.name
                 if isinstance(sig_alg, MD5):
                     result.findings.append(Finding(
-                        severity="CRITICAL", category="Certificado",
-                        name="Firma MD5",
-                        detail=SIG_ALG_RISK["md5"][1],
-                        remediation=_REMED_MD5,
+                        severity="CRITICAL",
+                        category=str(_T("Certificate", "Certificado")),
+                        name=str(_T("MD5 signature", "Firma MD5")),
+                        detail=str(SIG_ALG_RISK["md5"][1]),
+                        remediation=str(_REMED_MD5),
                         grade_cap="C",
                     ))
                 elif isinstance(sig_alg, SHA1):
                     result.findings.append(Finding(
-                        severity="HIGH", category="Certificado",
-                        name="Firma SHA-1",
-                        detail=SIG_ALG_RISK["sha1"][1],
-                        remediation=_REMED_SHA1,
+                        severity="HIGH",
+                        category=str(_T("Certificate", "Certificado")),
+                        name=str(_T("SHA-1 signature", "Firma SHA-1")),
+                        detail=str(SIG_ALG_RISK["sha1"][1]),
+                        remediation=str(_REMED_SHA1),
                         grade_cap="B",
                     ))
             else:
                 info.sig_algorithm = "Ed25519/Ed448"
         except Exception:
-            info.sig_algorithm = "desconocido"
+            info.sig_algorithm = str(_T("unknown", "desconocido"))
 
         try:
             san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
@@ -520,10 +566,13 @@ class SSLAuditor:
         if info.is_self_signed:
             result.findings.append(Finding(
                 severity="HIGH",
-                category="Certificado",
-                name="Certificado autofirmado",
-                detail="No emitido por una CA reconocida — los navegadores muestran advertencia",
-                remediation=_REMED_SELF_SIGNED,
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("Self-signed certificate", "Certificado autofirmado")),
+                detail=str(_T(
+                    "Not issued by a recognized CA — browsers show a security warning",
+                    "No emitido por una CA reconocida — los navegadores muestran advertencia",
+                )),
+                remediation=str(_REMED_SELF_SIGNED),
                 grade_cap="T",
             ))
 
@@ -531,10 +580,13 @@ class SSLAuditor:
         if not hostname_ok and not info.is_self_signed:
             result.findings.append(Finding(
                 severity="CRITICAL",
-                category="Certificado",
-                name="El certificado no cubre el hostname",
-                detail=f"Hostname {hostname!r} no coincide con SAN/CN del certificado",
-                remediation=_REMED_HOSTNAME,
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("Certificate does not cover hostname", "El certificado no cubre el hostname")),
+                detail=str(_T(
+                    f"Hostname {hostname!r} does not match the certificate SAN/CN",
+                    f"Hostname {hostname!r} no coincide con SAN/CN del certificado",
+                )),
+                remediation=str(_REMED_HOSTNAME),
                 grade_cap="T",
             ))
 
@@ -578,24 +630,31 @@ class SSLAuditor:
             result.findings.append(Finding(
                 severity="INFO",
                 category="mTLS",
-                name="SSL-MTLS-001: mTLS_NOT_ENFORCED — servidor acepta conexión sin cert cliente",
-                detail=(
+                name="SSL-MTLS-001: mTLS_NOT_ENFORCED — server accepts connection without client cert",
+                detail=str(_T(
+                    "The TLS server does not require mutual authentication (mTLS): it accepts connections "
+                    "without presenting a client certificate. For high-criticality services "
+                    "(internal APIs, microservices, admin endpoints) consider requiring "
+                    "client certificates via ClientAuth=require.",
                     "El servidor TLS no requiere autenticación mutua (mTLS): acepta conexiones "
                     "sin presentar un certificado cliente. Para servicios de alta criticidad "
                     "(APIs internas, microservicios, admin endpoints) considerar requerir "
-                    "certificado cliente mediante ClientAuth=require."
-                ),
+                    "certificado cliente mediante ClientAuth=require.",
+                )),
             ))
         elif result.mtls_required:
             result.findings.append(Finding(
                 severity="INFO",
                 category="mTLS",
-                name="SSL-MTLS-002: mTLS REQUERIDO — el servidor exige certificado cliente",
-                detail=(
-                    "El servidor requiere autenticación mutua TLS (mTLS): rechazó el handshake "
+                name="SSL-MTLS-002: mTLS REQUIRED — server requires client certificate",
+                detail=str(_T(
+                    f"The server requires mutual TLS authentication (mTLS): it rejected the handshake "
+                    f"with CERTIFICATE_REQUIRED ({error_ssl_sin[:80]}). "
+                    "Use --mtls-cert and --mtls-key to connect with a valid client certificate.",
+                    f"El servidor requiere autenticación mutua TLS (mTLS): rechazó el handshake "
                     f"con CERTIFICATE_REQUIRED ({error_ssl_sin[:80]}). "
-                    "Use --mtls-cert y --mtls-key para conectar con un certificado cliente válido."
-                ),
+                    "Use --mtls-cert y --mtls-key para conectar con un certificado cliente válido.",
+                )),
             ))
 
         if not self._mtls_cert or not self._mtls_key:
@@ -612,12 +671,15 @@ class SSLAuditor:
                     result.findings.append(Finding(
                         severity="INFO",
                         category="mTLS",
-                        name="SSL-MTLS-003: mTLS_CLIENT_CERT_ACCEPTED — certificado cliente aceptado",
-                        detail=(
+                        name="SSL-MTLS-003: mTLS_CLIENT_CERT_ACCEPTED — client certificate accepted",
+                        detail=str(_T(
+                            f"The server accepted the provided client certificate "
+                            f"(cert: {self._mtls_cert}). Mutual TLS authentication (mTLS) "
+                            "completed the handshake successfully.",
                             f"El servidor aceptó el certificado cliente proporcionado "
                             f"(cert: {self._mtls_cert}). La autenticación mutua TLS (mTLS) "
-                            "completó el handshake correctamente."
-                        ),
+                            "completó el handshake correctamente.",
+                        )),
                     ))
         except ssl.SSLError as exc:
             error_con = str(exc)
@@ -626,32 +688,43 @@ class SSLAuditor:
                 result.findings.append(Finding(
                     severity="INFO",
                     category="mTLS",
-                    name="SSL-MTLS-004: mTLS_CLIENT_CERT_REJECTED — certificado cliente rechazado",
-                    detail=(
-                        "El servidor rechazó el certificado cliente proporcionado. "
+                    name="SSL-MTLS-004: mTLS_CLIENT_CERT_REJECTED — client certificate rejected",
+                    detail=str(_T(
+                        f"The server rejected the provided client certificate. "
+                        f"TLS error: {error_con[:120]}. "
+                        "The certificate must be signed by the server's trusted CA "
+                        "(check the configured ClientAuth policy).",
+                        f"El servidor rechazó el certificado cliente proporcionado. "
                         f"Error TLS: {error_con[:120]}. "
                         "El certificado debe estar firmado por la CA de confianza del servidor "
-                        "(consultar la política de ClientAuth configurada)."
-                    ),
+                        "(consultar la política de ClientAuth configurada).",
+                    )),
                 ))
             else:
                 result.findings.append(Finding(
                     severity="INFO",
                     category="mTLS",
-                    name="SSL-MTLS-004: mTLS error al presentar certificado cliente",
-                    detail=f"Error al intentar mTLS con certificado cliente: {error_con[:120]}",
+                    name="SSL-MTLS-004: mTLS error presenting client certificate",
+                    detail=str(_T(
+                        f"Error attempting mTLS with client certificate: {error_con[:120]}",
+                        f"Error al intentar mTLS con certificado cliente: {error_con[:120]}",
+                    )),
                 ))
         except (FileNotFoundError, ssl.SSLError) as exc:
             result.findings.append(Finding(
                 severity="INFO",
                 category="mTLS",
-                name="SSL-MTLS-004: Error al cargar certificado/clave cliente",
-                detail=(
+                name="SSL-MTLS-004: Error loading client certificate/key",
+                detail=str(_T(
+                    f"Could not load the certificate ({self._mtls_cert}) or key "
+                    f"({self._mtls_key}): {str(exc)[:100]}. "
+                    "Verify that the files exist, have the correct PEM format "
+                    "and that the key matches the certificate.",
                     f"No se pudo cargar el certificado ({self._mtls_cert}) o la clave "
                     f"({self._mtls_key}): {str(exc)[:100]}. "
                     "Verificar que los ficheros existen, tienen el formato PEM correcto "
-                    "y que la clave corresponde al certificado."
-                ),
+                    "y que la clave corresponde al certificado.",
+                )),
             ))
 
     def _phase_http_headers(self, result: AuditResult) -> None:
@@ -681,10 +754,13 @@ class SSLAuditor:
         if not result.hsts_header:
             result.findings.append(Finding(
                 severity="HIGH",
-                category="Cabeceras HTTP",
-                name="HSTS ausente",
-                detail="Falta Strict-Transport-Security — posibles ataques de downgrade HTTP→HTTPS",
-                remediation=_REMED_HSTS_ABSENT,
+                category=str(_T("HTTP Headers", "Cabeceras HTTP")),
+                name=str(_T("HSTS absent", "HSTS ausente")),
+                detail=str(_T(
+                    "Missing Strict-Transport-Security — possible HTTP→HTTPS downgrade attacks",
+                    "Falta Strict-Transport-Security — posibles ataques de downgrade HTTP→HTTPS",
+                )),
+                remediation=str(_REMED_HSTS_ABSENT),
                 grade_cap="A",
             ))
         else:
@@ -700,38 +776,50 @@ class SSLAuditor:
             if max_age < 10_886_400:
                 result.findings.append(Finding(
                     severity="MEDIUM",
-                    category="Cabeceras HTTP",
-                    name="HSTS max-age insuficiente",
-                    detail=f"max-age={max_age}s es inferior al mínimo recomendado (180 días = 15 552 000s)",
-                    remediation=_REMED_HSTS_SHORT,
+                    category=str(_T("HTTP Headers", "Cabeceras HTTP")),
+                    name=str(_T("Insufficient HSTS max-age", "HSTS max-age insuficiente")),
+                    detail=str(_T(
+                        f"max-age={max_age}s is below the recommended minimum (180 days = 15,552,000s)",
+                        f"max-age={max_age}s es inferior al mínimo recomendado (180 días = 15 552 000s)",
+                    )),
+                    remediation=str(_REMED_HSTS_SHORT),
                     grade_cap="A-",
                 ))
             if "includesubdomains" not in result.hsts_header.lower():
                 result.findings.append(Finding(
                     severity="LOW",
-                    category="Cabeceras HTTP",
-                    name="HSTS sin includeSubDomains",
-                    detail="Los subdominios no están cubiertos por la política HSTS",
-                    remediation=_REMED_HSTS_NO_SUBS,
+                    category=str(_T("HTTP Headers", "Cabeceras HTTP")),
+                    name=str(_T("HSTS without includeSubDomains", "HSTS sin includeSubDomains")),
+                    detail=str(_T(
+                        "Subdomains are not covered by the HSTS policy",
+                        "Los subdominios no están cubiertos por la política HSTS",
+                    )),
+                    remediation=str(_REMED_HSTS_NO_SUBS),
                     grade_cap="A-",
                 ))
 
         if result.x_frame_options is None:
             result.findings.append(Finding(
                 severity="LOW",
-                category="Cabeceras HTTP",
-                name="X-Frame-Options ausente",
-                detail="Puede facilitar ataques de clickjacking si la app es embebible en iframe",
-                remediation=_REMED_XFO,
+                category=str(_T("HTTP Headers", "Cabeceras HTTP")),
+                name=str(_T("X-Frame-Options absent", "X-Frame-Options ausente")),
+                detail=str(_T(
+                    "May facilitate clickjacking attacks if the app can be embedded in an iframe",
+                    "Puede facilitar ataques de clickjacking si la app es embebible en iframe",
+                )),
+                remediation=str(_REMED_XFO),
             ))
 
         if result.x_content_type is None:
             result.findings.append(Finding(
                 severity="LOW",
-                category="Cabeceras HTTP",
-                name="X-Content-Type-Options ausente",
-                detail="Sin nosniff — posible MIME-type sniffing por el navegador",
-                remediation=_REMED_XCTO,
+                category=str(_T("HTTP Headers", "Cabeceras HTTP")),
+                name=str(_T("X-Content-Type-Options absent", "X-Content-Type-Options ausente")),
+                detail=str(_T(
+                    "Without nosniff — possible MIME-type sniffing by the browser",
+                    "Sin nosniff — posible MIME-type sniffing por el navegador",
+                )),
+                remediation=str(_REMED_XCTO),
             ))
 
     def _classify_cipher(self, cipher_name: str, result: AuditResult) -> None:
@@ -756,10 +844,10 @@ class SSLAuditor:
                 remed = remed_map.get(pattern, "")
                 result.findings.append(Finding(
                     severity=sev,
-                    category="Cifrado",
-                    name=f"Cipher débil: {cipher_name}",
-                    detail=detail,
-                    remediation=remed,
+                    category=str(_T("Cipher", "Cifrado")),
+                    name=str(_T(f"Weak cipher: {cipher_name}", f"Cipher débil: {cipher_name}")),
+                    detail=str(detail),
+                    remediation=str(remed) if remed else "",
                     grade_cap=cap,
                 ))
                 return
@@ -785,49 +873,64 @@ class SSLAuditor:
         if total_dias > 398:
             result.findings.append(Finding(
                 severity="CRITICAL",
-                category="Certificado SC081v3",
-                name="SSL-SC081-001: Certificado muy largo (> 398 días, no conforme SC081v3)",
-                detail=(
+                category=str(_T("Certificate SC081v3", "Certificado SC081v3")),
+                name="SSL-SC081-001: Certificate too long (> 398 days, non-compliant SC081v3)",
+                detail=str(_T(
+                    f"Total validity: {total_dias} days "
+                    f"(issued: {cert_info.not_before.date()}, expires: {cert_info.not_after.date()}). "
+                    "Exceeds the previous CA/B Forum limit (398 days) and the new SC081v3 limit (200 days, "
+                    "effective March 2026). Certificate likely issued before SC081v3 "
+                    "or by a non-compliant CA.",
                     f"Validez total: {total_dias} días "
                     f"(emisión: {cert_info.not_before.date()}, expiración: {cert_info.not_after.date()}). "
                     "Excede el límite anterior del CA/B Forum (398 días) y el nuevo límite SC081v3 (200 días, "
                     "vigente desde marzo 2026). Certificado probablemente emitido antes de SC081v3 "
-                    "o por una CA no conforme."
-                ),
-                remediation=_REMED_SC081V3,
+                    "o por una CA no conforme.",
+                )),
+                remediation=str(_REMED_SC081V3),
                 grade_cap="B",
             ))
         elif total_dias > 200:
             result.findings.append(Finding(
                 severity="HIGH",
-                category="Certificado SC081v3",
-                name="SSL-SC081-001: Certificado excede 200 días (CA/B Forum SC081v3)",
-                detail=(
+                category=str(_T("Certificate SC081v3", "Certificado SC081v3")),
+                name="SSL-SC081-001: Certificate exceeds 200 days (CA/B Forum SC081v3)",
+                detail=str(_T(
+                    f"Total validity: {total_dias} days "
+                    f"(issued: {cert_info.not_before.date()}, expires: {cert_info.not_after.date()}). "
+                    "CA/B Forum Ballot SC081v3 (effective March 2026) limits public TLS certificates "
+                    "to a maximum of 200 days. "
+                    "Gradual reduction: 90 days in 2027, 47 days in 2029.",
                     f"Validez total: {total_dias} días "
                     f"(emisión: {cert_info.not_before.date()}, expiración: {cert_info.not_after.date()}). "
                     "CA/B Forum Ballot SC081v3 (vigente desde marzo 2026) limita los certificados TLS "
                     "públicos a un máximo de 200 días. "
-                    "Reducción gradual: 90 días en 2027, 47 días en 2029."
-                ),
-                remediation=_REMED_SC081V3,
+                    "Reducción gradual: 90 días en 2027, 47 días en 2029.",
+                )),
+                remediation=str(_REMED_SC081V3),
             ))
 
         existing_expiry = any(
-            "expira" in f.name.lower() and f.category == "Certificado"
+            ("expira" in f.name.lower() or "expire" in f.name.lower())
+            and f.category in ("Certificado", "Certificate")
             for f in result.findings
         )
         if not existing_expiry and 0 <= cert_info.days_remaining < 30:
             result.findings.append(Finding(
                 severity="MEDIUM",
-                category="Certificado SC081v3",
-                name="SSL-SC081-002: Certificado expira en < 30 días (SC081v3)",
-                detail=(
+                category=str(_T("Certificate SC081v3", "Certificado SC081v3")),
+                name="SSL-SC081-002: Certificate expires in < 30 days (SC081v3)",
+                detail=str(_T(
+                    f"The certificate expires in {cert_info.days_remaining} days "
+                    f"({cert_info.not_after.date()}). "
+                    "With SC081v3 short cycles, frequent automated renewal is mandatory. "
+                    "Automate with ACME/certbot.",
                     f"El certificado expira en {cert_info.days_remaining} días "
                     f"({cert_info.not_after.date()}). "
                     "Con los ciclos cortos de SC081v3, la renovación frecuente y automatizada es obligatoria. "
-                    "Se recomienda automatizar con ACME/certbot."
-                ),
-                remediation=_REMED_CERT_EXPIRING,
+                    "Se recomienda automatizar con ACME/certbot.",
+                )),
+                remediation=str(_REMED_CERT_EXPIRING),
             ))
 
     def _phase_log4j_tls_bypass(self, result: AuditResult) -> None:
@@ -888,15 +991,20 @@ class SSLAuditor:
             result.findings.append(Finding(
                 severity="HIGH",
                 category="CVE / Log4j",
-                name="SSL-LOG4J-001: Posible CVE-2026-34477 — Log4j TLS bypass via JMSAppender",
-                detail=(
+                name="SSL-LOG4J-001: Possible CVE-2026-34477 — Log4j TLS bypass via JMSAppender",
+                detail=str(_T(
+                    f"Server identified as Java stack ({server_identificado!r}) + TLS accepts "
+                    "connection without SNI. CVE-2026-34477 affects applications with Log4j ≤ 2.23.1 "
+                    "and active JMSAppender: the JMS channel can be established without verifying the "
+                    "server certificate (TLS bypass). Verify Log4j version and inspect the "
+                    "JMSAppender configuration and the messaging broker TLS.",
                     f"Servidor identificado como stack Java ({server_identificado!r}) + TLS acepta "
                     "conexión sin SNI. CVE-2026-34477 afecta a aplicaciones con Log4j ≤ 2.23.1 "
                     "y JMSAppender activo: el canal JMS puede establecerse sin verificar el certificado "
                     "del servidor (TLS bypass). Verificar versión de Log4j e inspeccionar la "
-                    "configuración de JMSAppender y del TLS del broker de mensajería."
-                ),
-                remediation=_REMED_LOG4J_TLS,
+                    "configuración de JMSAppender y del TLS del broker de mensajería.",
+                )),
+                remediation=str(_REMED_LOG4J_TLS),
             ))
 
     def _phase_session_resumption(self, result: AuditResult) -> None:
@@ -943,25 +1051,32 @@ class SSLAuditor:
             result.findings.append(Finding(
                 severity="MEDIUM",
                 category="TLS / Session",
-                name="SSL-RESUME-001: TLS session tickets sin rotación detectados",
-                detail=(
+                name="SSL-RESUME-001: TLS session tickets without rotation detected",
+                detail=str(_T(
+                    "The server issues identical TLS session tickets across successive connections. "
+                    "Session tickets without frequent rotation weaken forward secrecy: "
+                    "if the ticket key is compromised, an attacker can decrypt "
+                    "past TLS sessions captured during that period.",
                     "El servidor emite TLS session tickets idénticos en conexiones sucesivas. "
                     "Los session tickets sin rotación frecuente debilitan la forward secrecy: "
                     "si la clave del ticket se compromete, un atacante puede descifrar sesiones "
-                    "TLS pasadas capturadas durante ese período."
-                ),
-                remediation=_REMED_SESSION_TICKETS,
+                    "TLS pasadas capturadas durante ese período.",
+                )),
+                remediation=str(_REMED_SESSION_TICKETS),
             ))
         elif ticket_a is not None and len(ticket_a) > 0:
             result.findings.append(Finding(
                 severity="INFO",
                 category="TLS / Session",
-                name="SSL-RESUME-001: TLS session tickets activos (rotación detectada)",
-                detail=(
+                name="SSL-RESUME-001: TLS session tickets active (rotation detected)",
+                detail=str(_T(
+                    "The server issues TLS session tickets with active rotation between sessions. "
+                    "Forward secrecy is adequately maintained if rotation is frequent "
+                    "(recommended: every hour at most).",
                     "El servidor emite TLS session tickets con rotación activa entre sesiones. "
                     "La forward secrecy se mantiene adecuadamente si la rotación es frecuente "
-                    "(recomendado: cada hora como máximo)."
-                ),
+                    "(recomendado: cada hora como máximo).",
+                )),
                 remediation="",
             ))
 
@@ -999,13 +1114,15 @@ class SSLAuditor:
         if not ocsp_url:
             result.findings.append(Finding(
                 severity="MEDIUM",
-                category="Certificado",
-                name="Sin URL OCSP en el certificado",
-                detail=(
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("No OCSP URL in certificate", "Sin URL OCSP en el certificado")),
+                detail=str(_T(
+                    "The certificate does not contain an OCSP responder URL in the AIA extension. "
+                    "Without it, clients cannot verify the revocation status in real time.",
                     "El certificado no contiene una URL de responder OCSP en la extensión AIA. "
-                    "Sin ella, los clientes no pueden verificar el estado de revocación en tiempo real."
-                ),
-                remediation=_REMED_OCSP_NO_URL,
+                    "Sin ella, los clientes no pueden verificar el estado de revocación en tiempo real.",
+                )),
+                remediation=str(_REMED_OCSP_NO_URL),
             ))
             return
 
@@ -1037,15 +1154,19 @@ class SSLAuditor:
         if not stapling_found:
             result.findings.append(Finding(
                 severity="LOW",
-                category="Certificado",
-                name="OCSP Stapling no detectado",
-                detail=(
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("OCSP Stapling not detected", "OCSP Stapling no detectado")),
+                detail=str(_T(
+                    f"The certificate has an OCSP URL ({ocsp_url}) but the server "
+                    "does not send a stapled OCSP response in the TLS handshake. "
+                    "This forces the client to contact the OCSP responder directly, "
+                    "slowing the connection and leaking which sites the user visits.",
                     f"El certificado tiene URL OCSP ({ocsp_url}) pero el servidor "
                     "no envía una respuesta OCSP stapled en el handshake TLS. "
                     "Esto obliga al cliente a contactar directamente al responder OCSP, "
-                    "ralentizando la conexión y filtrando qué sitios visita el usuario."
-                ),
-                remediation=_REMED_OCSP_NO_STAPLING,
+                    "ralentizando la conexión y filtrando qué sitios visita el usuario.",
+                )),
+                remediation=str(_REMED_OCSP_NO_STAPLING),
             ))
 
     def _phase_ct_logs(self, result: AuditResult) -> None:
@@ -1077,15 +1198,19 @@ class SSLAuditor:
         if has_sct_embedded is False:
             result.findings.append(Finding(
                 severity="LOW",
-                category="Certificado",
-                name="Sin SCTs embebidos en el certificado",
-                detail=(
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T("No embedded SCTs in certificate", "Sin SCTs embebidos en el certificado")),
+                detail=str(_T(
+                    "The certificate does not contain embedded Signed Certificate Timestamps (SCTs). "
+                    "SCTs are required for browsers like Chrome to trust the certificate. "
+                    "They can also be delivered via TLS extension or OCSP response, "
+                    "but the embedded form is the most robust.",
                     "El certificado no contiene Signed Certificate Timestamps (SCTs) embebidos. "
                     "Los SCTs son obligatorios para que navegadores como Chrome confíen en el certificado. "
                     "Pueden entregarse también vía extensión TLS o respuesta OCSP, "
-                    "pero la forma embebida es la más robusta."
-                ),
-                remediation=_REMED_NO_SCT,
+                    "pero la forma embebida es la más robusta.",
+                )),
+                remediation=str(_REMED_NO_SCT),
             ))
 
         try:
@@ -1115,15 +1240,22 @@ class SSLAuditor:
         if not found_in_ct and serial_norm:
             result.findings.append(Finding(
                 severity="MEDIUM",
-                category="Certificado",
-                name="Certificado no encontrado en CT logs (crt.sh)",
-                detail=(
+                category=str(_T("Certificate", "Certificado")),
+                name=str(_T(
+                    "Certificate not found in CT logs (crt.sh)",
+                    "Certificado no encontrado en CT logs (crt.sh)",
+                )),
+                detail=str(_T(
+                    f"Certificate with serial {result.cert.serial} for '{hostname}' "
+                    "was not found in the Certificate Transparency logs queried at crt.sh. "
+                    "Possible causes: cert issued by a private CA, very recent issuance "
+                    "(CT may take hours to index) or CA does not comply with CT.",
                     f"El certificado con serial {result.cert.serial} para '{hostname}' "
                     "no fue encontrado en los Certificate Transparency logs consultados en crt.sh. "
                     "Posibles causas: cert emitido por CA privada, emisión muy reciente "
-                    "(CT puede tardar horas en indexarlo) o CA no cumple con CT."
-                ),
-                remediation=_REMED_CT_NO_LOG,
+                    "(CT puede tardar horas en indexarlo) o CA no cumple con CT.",
+                )),
+                remediation=str(_REMED_CT_NO_LOG),
             ))
 
     def _audit_dane(self, domain: str, port: int, findings: list) -> None:
@@ -1140,23 +1272,28 @@ class SSLAuditor:
             findings.append(Finding(
                 severity="INFO",
                 category="DANE/TLSA",
-                name="DANE/TLSA no configurado",
-                detail=(
+                name=str(_T("DANE/TLSA not configured", "DANE/TLSA no configurado")),
+                detail=str(_T(
+                    f"No TLSA record found at {tlsa_name}. "
+                    "Without DANE there is no DNS-based certificate pinning: certificate "
+                    "validation depends solely on the CA hierarchy.",
                     f"No se encontró registro TLSA en {tlsa_name}. "
                     "Sin DANE no existe anclaje de certificado por DNS: la validación "
-                    "del certificado depende exclusivamente de la jerarquía de CAs."
-                ),
+                    "del certificado depende exclusivamente de la jerarquía de CAs.",
+                )),
             ))
             return
         except dns.exception.DNSException:
             findings.append(Finding(
                 severity="INFO",
                 category="DANE/TLSA",
-                name="DANE/TLSA no configurado",
-                detail=(
+                name=str(_T("DANE/TLSA not configured", "DANE/TLSA no configurado")),
+                detail=str(_T(
+                    f"Could not resolve the TLSA record at {tlsa_name}. "
+                    "Without DANE there is no DNS-based certificate pinning.",
                     f"No se pudo resolver el registro TLSA en {tlsa_name}. "
-                    "Sin DANE no existe anclaje de certificado por DNS."
-                ),
+                    "Sin DANE no existe anclaje de certificado por DNS.",
+                )),
             ))
             return
         except Exception:
@@ -1171,12 +1308,15 @@ class SSLAuditor:
                 findings.append(Finding(
                     severity="MEDIUM",
                     category="DANE/TLSA",
-                    name="Registro TLSA malformado",
-                    detail=(
+                    name=str(_T("Malformed TLSA record", "Registro TLSA malformado")),
+                    detail=str(_T(
+                        f"TLSA record found at {tlsa_name} but cannot be "
+                        "parsed correctly. Expected format: "
+                        "usage selector matching-type certificate-data.",
                         f"Registro TLSA encontrado en {tlsa_name} pero no se puede "
                         "parsear correctamente. Formato esperado: "
-                        "usage selector matching-type certificate-data."
-                    ),
+                        "usage selector matching-type certificate-data.",
+                    )),
                 ))
                 return
 
@@ -1184,24 +1324,31 @@ class SSLAuditor:
                 findings.append(Finding(
                     severity="INFO",
                     category="DANE/TLSA",
-                    name="DANE/TLSA configurado correctamente",
-                    detail=(
+                    name=str(_T("DANE/TLSA correctly configured", "DANE/TLSA configurado correctamente")),
+                    detail=str(_T(
+                        f"TLSA record found at {tlsa_name}: "
+                        f"usage={usage} (DANE-EE), selector={selector} (SPKI), "
+                        f"matching-type={mtype}. Optimal DANE configuration for "
+                        "public key pinning without CA dependency.",
                         f"Registro TLSA encontrado en {tlsa_name}: "
                         f"usage={usage} (DANE-EE), selector={selector} (SPKI), "
                         f"matching-type={mtype}. Configuración DANE óptima para "
-                        "anclaje de clave pública sin dependencia de CA."
-                    ),
+                        "anclaje de clave pública sin dependencia de CA.",
+                    )),
                 ))
             else:
                 findings.append(Finding(
                     severity="INFO",
                     category="DANE/TLSA",
-                    name="DANE/TLSA configurado",
-                    detail=(
+                    name=str(_T("DANE/TLSA configured", "DANE/TLSA configurado")),
+                    detail=str(_T(
+                        f"TLSA record found at {tlsa_name}: "
+                        f"usage={usage}, selector={selector}, matching-type={mtype}. "
+                        "DNS certificate pinning active.",
                         f"Registro TLSA encontrado en {tlsa_name}: "
                         f"usage={usage}, selector={selector}, matching-type={mtype}. "
-                        "Anclaje de certificado DNS activo."
-                    ),
+                        "Anclaje de certificado DNS activo.",
+                    )),
                 ))
             return
 
@@ -1222,11 +1369,13 @@ class SSLAuditor:
             findings.append(Finding(
                 severity="INFO",
                 category="CT Logs",
-                name="CT check omitido (no disponible)",
-                detail=(
+                name=str(_T("CT check skipped (unavailable)", "CT check omitido (no disponible)")),
+                detail=str(_T(
+                    f"Could not query crt.sh for domain {domain}. "
+                    "Certificate Transparency log verification is not available.",
                     f"No se pudo consultar crt.sh para el dominio {domain}. "
-                    "La verificación de Certificate Transparency logs no está disponible."
-                ),
+                    "La verificación de Certificate Transparency logs no está disponible.",
+                )),
             ))
             return
 
@@ -1245,27 +1394,36 @@ class SSLAuditor:
             except Exception:
                 pass
 
-            detalle = (
-                f"Se encontraron {total} certificado(s) en CT logs para '{domain}'."
-            )
+            detalle = str(_T(
+                f"Found {total} certificate(s) in CT logs for '{domain}'.",
+                f"Se encontraron {total} certificado(s) en CT logs para '{domain}'.",
+            ))
             if mas_reciente:
-                detalle += f" Más reciente emitido: {mas_reciente}."
+                detalle += str(_T(
+                    f" Most recently issued: {mas_reciente}.",
+                    f" Más reciente emitido: {mas_reciente}.",
+                ))
 
             findings.append(Finding(
                 severity="INFO",
                 category="CT Logs",
-                name=f"CT logs: {total} certificado(s) registrados",
+                name=str(_T(
+                    f"CT logs: {total} certificate(s) registered",
+                    f"CT logs: {total} certificado(s) registrados",
+                )),
                 detail=detalle,
             ))
         else:
             findings.append(Finding(
                 severity="INFO",
                 category="CT Logs",
-                name="CT check omitido (no disponible)",
-                detail=(
+                name=str(_T("CT check skipped (unavailable)", "CT check omitido (no disponible)")),
+                detail=str(_T(
+                    f"crt.sh returned no certificates for '{domain}'. "
+                    "This may be a private domain or crt.sh may not have data yet.",
                     f"crt.sh no devolvió certificados para '{domain}'. "
-                    "Puede deberse a un dominio privado o a que crt.sh no tiene datos aún."
-                ),
+                    "Puede deberse a un dominio privado o a que crt.sh no tiene datos aún.",
+                )),
             ))
 
 
@@ -1285,7 +1443,10 @@ def apply_delta_scan(
     try:
         baseline_data = json.loads(Path(delta_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"No se puede leer el delta baseline '{delta_path}': {exc}") from exc
+        raise ValueError(str(_T(
+            f"Cannot read delta baseline '{delta_path}': {exc}",
+            f"No se puede leer el delta baseline '{delta_path}': {exc}",
+        ))) from exc
     baseline_keys: set = set()
     for br in baseline_data.get("results", []):
         h, p = br.get("host", ""), br.get("port", 0)
