@@ -216,7 +216,7 @@ jobs:
 
 ```
 $ python3 vamp_ssl_audit.py -H expired.badssl.com -H self-signed.badssl.com -H badssl.com
-vamp-ssl-audit v1.8.0 — TLS/SSL Professional Auditor · VampSecure Labs
+vamp-ssl-audit v1.9.0 — TLS/SSL Professional Auditor · VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 Auditing 3 hosts with 3 workers...
 
@@ -306,6 +306,7 @@ Use exclusively on systems you own or for which you hold explicit written author
 
 | Version | Main changes |
 |---------|-------------|
+| v1.9.0 | Bilingual `--help` menu: `_detect_lang()` pre-parser detects `--lang` / `LANG` env var |
 | v1.8.0 | Bilingual EN/ES output via `--lang en|es` |
 | v1.7.1 | Bilingual README (EN/ES) |
 | v1.7.0 | Unified CLI with subcommands; importable package (S3 modularization) |
@@ -525,7 +526,7 @@ jobs:
 
 ```
 $ python3 vamp_ssl_audit.py -H expired.badssl.com -H self-signed.badssl.com -H badssl.com
-vamp-ssl-audit v1.8.0 — Auditor Profesional TLS/SSL · VampSecure Labs
+vamp-ssl-audit v1.9.0 — Auditor Profesional TLS/SSL · VampSecure Labs
 ──────────────────────────────────────────────────────────────────────
 Auditando 3 hosts con 3 workers...
 
@@ -615,6 +616,7 @@ Uso exclusivo en sistemas de tu propiedad o sobre los que dispongas de autorizac
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| v1.9.0 | Menú `--help` bilingüe: `_detect_lang()` detecta `--lang` / variable `LANG` antes del parser |
 | v1.8.0 | Salida bilingüe EN/ES mediante `--lang en|es` |
 | v1.7.1 | README bilingüe (EN/ES) |
 | v1.7.0 | CLI unificado con subcomandos; paquete importable (S3 modularización) |
