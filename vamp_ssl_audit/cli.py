@@ -37,7 +37,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-ssl-audit v1.8.0 · TLS/SSL Professional Auditor with mTLS Testing
+  vamp-ssl-audit v1.9.0 · TLS/SSL Professional Auditor with mTLS Testing
   ────────────────────────────────────────────────────────────────────────
   FOR AUTHORIZED AUDITS ONLY · Unauthorised use is illegal
 """
@@ -193,72 +193,135 @@ def print_summary(results: list[AuditResult]) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _detect_lang() -> str:
+    """Detect output language before full CLI parse.
+
+    Priority: --lang in sys.argv > LANG/LANGUAGE env var > 'en'.
+    """
+    import os as _os
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--lang" and i + 1 < len(argv):
+            v = argv[i + 1]
+            return v if v in ("en", "es") else "en"
+        if arg.startswith("--lang="):
+            v = arg.split("=", 1)[1]
+            return v if v in ("en", "es") else "en"
+    for var in ("LANG", "LANGUAGE"):
+        val = _os.environ.get(var, "")
+        if val.lower().startswith("es"):
+            return "es"
+    return "en"
+
+
 def _parse_args() -> argparse.Namespace:
     """Parsea los argumentos de la línea de comandos."""
+    import vamp_ssl_audit._models as _models_mod
+    _models_mod.LANG = _detect_lang()
+
     p = argparse.ArgumentParser(
         prog=TOOL_NAME,
-        description=f"VampSecure Labs SSL Audit v{VERSION} — Auditor TLS/SSL con calificación SSLabs-style",
+        description=str(_T(
+            f"VampSecure Labs SSL Audit v{VERSION} — TLS/SSL auditor with SSLabs-style grading",
+            f"VampSecure Labs SSL Audit v{VERSION} — Auditor TLS/SSL con calificación SSLabs-style",
+        )),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Ejemplos:
-  vamp-ssl-audit -H ejemplo.com
-  vamp-ssl-audit -H ejemplo.com:8443 -H otro.com
-  vamp-ssl-audit -H ejemplo.com --json salida.json --html informe.html
-  vamp-ssl-audit --file lista_hosts.txt --workers 10 --markdown informe.md --csv resultados.csv
-        """,
+        epilog=str(_T(
+            "Examples:\n"
+            "  vamp-ssl-audit -H example.com\n"
+            "  vamp-ssl-audit -H example.com:8443 -H other.com\n"
+            "  vamp-ssl-audit -H example.com --json out.json --html report.html\n"
+            "  vamp-ssl-audit --file hosts.txt --workers 10 --markdown report.md --csv results.csv",
+            "Ejemplos:\n"
+            "  vamp-ssl-audit -H ejemplo.com\n"
+            "  vamp-ssl-audit -H ejemplo.com:8443 -H otro.com\n"
+            "  vamp-ssl-audit -H ejemplo.com --json salida.json --html informe.html\n"
+            "  vamp-ssl-audit --file lista_hosts.txt --workers 10 --markdown informe.md --csv resultados.csv",
+        )),
     )
-    p.add_argument("-H", "--host", dest="hosts", metavar="HOST[:PUERTO]",
+    p.add_argument("-H", "--host", dest="hosts", metavar="HOST[:PORT]",
                    action="append", default=[],
-                   help="Host a auditar (se puede repetir). Puerto por defecto: 443")
+                   help=str(_T("Host to audit (repeatable). Default port: 443",
+                               "Host a auditar (se puede repetir). Puerto por defecto: 443")))
     p.add_argument("--file", metavar="FILE",
-                   help="Fichero con hosts, uno por línea (HOST o HOST:PUERTO)")
+                   help=str(_T("File with hosts, one per line (HOST or HOST:PORT)",
+                               "Fichero con hosts, uno por línea (HOST o HOST:PUERTO)")))
     p.add_argument("--port", type=int, default=443,
-                   help="Puerto por defecto cuando no se especifica en --host (default: 443)")
+                   help=str(_T("Default port when not specified in --host (default: 443)",
+                               "Puerto por defecto cuando no se especifica en --host (default: 443)")))
     p.add_argument("--timeout", type=int, default=10,
-                   help="Timeout de conexión en segundos (default: 10)")
+                   help=str(_T("Connection timeout in seconds (default: 10)",
+                               "Timeout de conexión en segundos (default: 10)")))
     p.add_argument("--workers", type=int, default=5,
-                   help="Parallel threads for multiple hosts (default: 5)")
+                   help=str(_T("Parallel threads for multiple hosts (default: 5)",
+                               "Threads paralelos para múltiples hosts (default: 5)")))
     p.add_argument("--json", metavar="FILE",
-                   help="Guardar resultado completo en JSON (incluye remediaciones)")
+                   help=str(_T("Save full results to JSON (includes remediations)",
+                               "Guardar resultado completo en JSON (incluye remediaciones)")))
     p.add_argument("--html", metavar="FILE",
-                   help="Guardar informe en HTML dark-theme (incluye remediaciones colapsables)")
+                   help=str(_T("Save report to HTML dark-theme (collapsible remediations)",
+                               "Guardar informe en HTML dark-theme (incluye remediaciones colapsables)")))
     p.add_argument("--markdown", metavar="FILE",
-                   help="Guardar informe en Markdown (apto para repositorios de auditoría)")
+                   help=str(_T("Save report to Markdown (suitable for audit repositories)",
+                               "Guardar informe en Markdown (apto para repositorios de auditoría)")))
     p.add_argument("--csv", metavar="FILE",
-                   help="Guardar resumen en CSV (genera además FILE.findings con detalle de hallazgos)")
+                   help=str(_T("Save summary to CSV (also generates FILE.findings with finding detail)",
+                               "Guardar resumen en CSV (genera además FILE.findings con detalle de hallazgos)")))
     p.add_argument("--warn-days", type=int, default=90, metavar="N",
-                   help="Días de antelación para alerta MEDIUM de caducidad (default: 90). "
-                        "Con Let's Encrypt y renovación automática activa, usa --warn-days 30")
+                   help=str(_T(
+                       "Days ahead to warn MEDIUM for certificate expiry (default: 90). "
+                       "With Let's Encrypt + auto-renewal, use --warn-days 30",
+                       "Días de antelación para alerta MEDIUM de caducidad (default: 90). "
+                       "Con Let's Encrypt y renovación automática activa, usa --warn-days 30",
+                   )))
     p.add_argument("--strict-tls13", action="store_true", default=False,
-                   help="Modo estricto TLS 1.3: si el servidor soporta TLS 1.2 o inferior, "
-                        "la nota máxima es B. Útil para entornos que exigen TLS 1.3 exclusivo.")
+                   help=str(_T(
+                       "Strict TLS 1.3 mode: cap grade at B if TLS 1.2 or lower is accepted. "
+                       "Use in environments that mandate TLS 1.3 exclusively.",
+                       "Modo estricto TLS 1.3: si el servidor soporta TLS 1.2 o inferior, "
+                       "la nota máxima es B. Útil para entornos que exigen TLS 1.3 exclusivo.",
+                   )))
 
     mtls_group = p.add_argument_group(
         "mTLS testing",
-        "Prueba de autenticación mutua TLS. Sin --mtls-cert/--mtls-key detecta si el "
-        "servidor REQUIERE certificado cliente. Con ambas opciones, conecta usando el "
-        "certificado proporcionado e informa si es aceptado o rechazado.",
+        str(_T(
+            "Mutual TLS authentication testing. Without --mtls-cert/--mtls-key, detects if the "
+            "server REQUIRES a client certificate. With both options, connects using the provided "
+            "certificate and reports whether it is accepted or rejected.",
+            "Prueba de autenticación mutua TLS. Sin --mtls-cert/--mtls-key detecta si el "
+            "servidor REQUIERE certificado cliente. Con ambas opciones, conecta usando el "
+            "certificado proporcionado e informa si es aceptado o rechazado.",
+        )),
     )
     mtls_group.add_argument(
         "--mtls-cert", metavar="CERT.pem",
-        help="Ruta al certificado cliente PEM para la prueba de mTLS.",
+        help=str(_T("Path to client PEM certificate for mTLS testing.",
+                    "Ruta al certificado cliente PEM para la prueba de mTLS.")),
     )
     mtls_group.add_argument(
         "--mtls-key", metavar="KEY.pem",
-        help="Ruta a la clave privada PEM del certificado cliente (par de --mtls-cert).",
+        help=str(_T("Path to client PEM private key (pair for --mtls-cert).",
+                    "Ruta a la clave privada PEM del certificado cliente (par de --mtls-cert).")),
     )
 
     p.add_argument(
         "--lang", choices=["en", "es"], default="en",
-        help="Output language for report labels and findings (default: en)",
+        help="Output language / Idioma de salida (default: en). "
+             "Auto-detected from LANG/LANGUAGE env if not set.",
     )
     p.add_argument(
         "--watch", type=int, metavar="SECONDS",
-        help="Daemon mode: re-audit every N seconds, show only NEW/RESOLVED findings",
+        help=str(_T("Daemon mode: re-audit every N seconds, show only NEW/RESOLVED findings",
+                    "Modo demonio: re-auditar cada N segundos, mostrar solo hallazgos NEW/RESOLVED")),
     )
     p.add_argument(
         "--delta", metavar="FILE",
-        help="Delta scan: comparar con un informe JSON previo (--json). "
-             "Muestra hallazgos como NEW/RECURRING y lista los RESOLVED.",
+        help=str(_T(
+            "Delta scan: compare against a previous JSON report (--json). "
+            "Shows findings as NEW/RECURRING and lists RESOLVED.",
+            "Delta scan: comparar con un informe JSON previo (--json). "
+            "Muestra hallazgos como NEW/RECURRING y lista los RESOLVED.",
+        )),
     )
 
     from vampsec_report import add_report_args
@@ -367,7 +430,7 @@ def main() -> None:
     console.print(BANNER, style="bold magenta")
 
     args = _parse_args()
-    _models.LANG = args.lang
+    _models.LANG = args.lang  # reapply in case --lang differs from auto-detected
 
     if getattr(args, "watch", None) is not None:
         _daemon_loop(args, args.watch)

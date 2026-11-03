@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-VERSION   = "1.8.0"
+VERSION   = "1.9.0"
 TOOL_NAME = "vamp-ssl-audit"
 
 # ---------------------------------------------------------------------------
